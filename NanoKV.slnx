@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/NanoKV.Core/NanoKV.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/NanoKV.Core.Tests/NanoKV.Core.Tests.csproj" />
+  </Folder>
+</Solution>
