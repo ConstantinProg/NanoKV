@@ -11,7 +11,6 @@ public static class CommandParser
 
         input = TrimSpaces(input);
 
-        // 1. Найти конец команды
         int firstSpace = input.IndexOf(Space);
         if (firstSpace < 0)
             return default;
@@ -22,12 +21,10 @@ public static class CommandParser
         if (remainder.IsEmpty)
             return default;
 
-        // 2. Найти конец ключа
         int secondSpace = remainder.IndexOf(Space);
 
         if (secondSpace < 0)
         {
-            // Команда с двумя аргументами (GET key)
             return new ParsedCommand(command, remainder, ReadOnlySpan<byte>.Empty);
         }
 
@@ -37,7 +34,6 @@ public static class CommandParser
 
         if (value.IsEmpty)
         {
-            // Если после второго пробела ничего нет — некорректная команда
             return default;
         }
 
