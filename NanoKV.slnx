@@ -1,8 +1,10 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/NanoKV.Core/NanoKV.Core.csproj" />
+    <Project Path="src/NanoKV.Server/NanoKV.Server.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/NanoKV.Core.Tests/NanoKV.Core.Tests.csproj" />
+    <Project Path="tests/NanoKV.Server.Tests/NanoKV.Server.Tests.csproj" Id="63b8ba0a-72f5-4dda-a1a7-a306f2ff447d" />
   </Folder>
 </Solution>
