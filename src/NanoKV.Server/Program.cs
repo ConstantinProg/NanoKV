@@ -1,8 +1,17 @@
 ﻿using NanoKV.Server;
 
-var server = new TcpServer("127.0.0.1", 8080);
+var server = new TcpServer("127.0.0.1", 8080, new ConsoleCommandHandler());
 
-_ = server.StartAsync(CancellationToken.None);
+var cts = new CancellationTokenSource();
 
-Console.WriteLine("Press ENTER to stop server...");
-Console.ReadLine();
+var serverTask = server.StartAsync(cts.Token);
+
+Console.CancelKeyPress += (s, e) =>
+{
+    e.Cancel = true;
+    cts.Cancel();
+};
+
+Console.WriteLine("Server started. Press Ctrl+C to stop.");
+
+await serverTask;

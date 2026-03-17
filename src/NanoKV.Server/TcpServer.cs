@@ -9,34 +9,49 @@ namespace NanoKV.Server;
 public sealed class TcpServer
 {
     private readonly IPEndPoint _endpoint;
+    private readonly ICommandHandler _commandHandler;
+    private readonly SemaphoreSlim _connectionLimiter = new(100);
 
-    public TcpServer(string ip, int port)
+    public TcpServer(string ip, int port, ICommandHandler handler)
     {
         _endpoint = new IPEndPoint(IPAddress.Parse(ip), port);
+        _commandHandler = handler;
     }
 
     public async Task StartAsync(CancellationToken token)
     {
-        var server = new Socket(
+        using var server = new Socket(
             AddressFamily.InterNetwork,
             SocketType.Stream,
             ProtocolType.Tcp);
 
         server.Bind(_endpoint);
         server.Listen(100);
-
         while (!token.IsCancellationRequested)
         {
             var client = await server.AcceptAsync(token);
 
-            _ = ProcessClientAsync(client, token);
+            await _connectionLimiter.WaitAsync(token);
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await ProcessClientAsync(client, token);
+                }
+                finally
+                {
+                    _connectionLimiter.Release();
+                }
+            }, token);
         }
     }
-
     private async Task ProcessClientAsync(Socket client, CancellationToken token)
     {
         var pool = ArrayPool<byte>.Shared;
         var buffer = pool.Rent(4096);
+
+        var ring = new RingBuffer(8192);
 
         try
         {
@@ -47,51 +62,25 @@ public sealed class TcpServer
                 if (bytesRead == 0)
                     break;
 
-                var span = new ReadOnlySpan<byte>(buffer, 0, bytesRead);
-                var command = CommandParser.Parse(span);
+                ring.Write(buffer.AsSpan(0, bytesRead));
 
-                if (command.IsEmpty)
+                while (ring.TryReadLine(out var line))
                 {
-                    Console.WriteLine("Invalid command");
-                    continue;
-                }
+                    var cmd = CommandParser.Parse(line);
 
-                PrintCommand(command);
+                    if (!cmd.IsEmpty)
+                        _commandHandler.Handle(cmd);
+                }
             }
-        }
-        catch (SocketException ex)
-        {
-            Console.WriteLine($"Socket error: {ex.Message}");
         }
         finally
         {
             pool.Return(buffer);
 
-            try
-            {
-                client.Shutdown(SocketShutdown.Both);
-            }
-            catch
-            {
-            }
+            try { client.Shutdown(SocketShutdown.Both); }
+            catch { }
 
-            client.Close();
             client.Dispose();
         }
-    }
-
-    private static void PrintCommand(ParsedCommand cmd)
-    {
-        string command = Encoding.ASCII.GetString(cmd.Command);
-        string key = Encoding.ASCII.GetString(cmd.Key);
-        string value = Encoding.ASCII.GetString(cmd.Value);
-
-        Console.WriteLine($"Command: {command}");
-
-        if (!string.IsNullOrEmpty(key))
-            Console.WriteLine($"Key: {key}");
-
-        if (!string.IsNullOrEmpty(value))
-            Console.WriteLine($"Value: {value}");
     }
 }
