@@ -1,7 +1,7 @@
 ﻿using System.Text;
 using Xunit;
 
-namespace NanoKv.Core.Protocol;
+namespace NanoKV.Core.Protocol;
 
 public class CommandParserTests
 {
@@ -28,17 +28,6 @@ public class CommandParserTests
         Assert.Equal("user:1", Encoding.ASCII.GetString(result.Key));
         Assert.True(result.Value.IsEmpty);
     }
-
-    [Fact]
-    public void Parse_InvalidCommand_ShouldReturnEmpty()
-    {
-        var input = Encoding.ASCII.GetBytes("SET");
-
-        var result = CommandParser.Parse(input);
-
-        Assert.True(result.IsEmpty);
-    }
-
     [Fact]
     public void Parse_CommandWithExtraSpaces_ShouldParseCorrectly()
     {

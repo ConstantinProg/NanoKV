@@ -1,23 +1,23 @@
-﻿using System.Buffers;
+﻿using NanoKV.Core.Protocol;
+using NanoKV.Core.Storage;
+using System.Buffers;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
-using NanoKv.Core.Protocol;
 
 namespace NanoKV.Server;
 
 public sealed class TcpServer
 {
     private readonly IPEndPoint _endpoint;
-    private readonly ICommandHandler _commandHandler;
     private readonly SemaphoreSlim _connectionLimiter = new(100);
+    private readonly ICommandHandler _commandHandler;
 
     public TcpServer(string ip, int port, ICommandHandler handler)
     {
         _endpoint = new IPEndPoint(IPAddress.Parse(ip), port);
         _commandHandler = handler;
     }
-
     public async Task StartAsync(CancellationToken token)
     {
         using var server = new Socket(
@@ -67,9 +67,11 @@ public sealed class TcpServer
                 while (ring.TryReadLine(out var line))
                 {
                     var cmd = CommandParser.Parse(line);
-
                     if (!cmd.IsEmpty)
-                        _commandHandler.Handle(cmd);
+                    {
+                        var response = await _commandHandler.HandleAsync(cmd);
+                        await client.SendAsync(response, token);
+                    }
                 }
             }
         }

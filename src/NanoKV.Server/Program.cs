@@ -1,7 +1,10 @@
-﻿using NanoKV.Server;
+﻿using NanoKV.Core.Storage;
+using NanoKV.Server;
 
-var server = new TcpServer("127.0.0.1", 8080, new ConsoleCommandHandler());
+var store = new SimpleStore();
+var handler = new StoreCommandHandler(store);
 
+var server = new TcpServer("127.0.0.1", 8080, handler);
 var cts = new CancellationTokenSource();
 
 var serverTask = server.StartAsync(cts.Token);

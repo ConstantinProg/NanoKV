@@ -13,7 +13,7 @@ public class TcpServerTests
     {
         var cts = new CancellationTokenSource();
 
-        var server = new TcpServer("127.0.0.1", 9090, new ConsoleCommandHandler());
+        var server = new TcpServer("127.0.0.1", 9090, new StoreCommandHandler(new Core.Storage.SimpleStore()));
 
         _ = Task.Run(() => server.StartAsync(cts.Token));
 

@@ -1,6 +1,6 @@
-﻿using NanoKv.Core.Protocol;
+﻿using NanoKV.Core.Protocol;
 
 public interface ICommandHandler
 {
-    void Handle(ParsedCommand command);
+    ValueTask<byte[]> HandleAsync(ParsedCommand command);
 }

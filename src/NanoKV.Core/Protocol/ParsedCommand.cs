@@ -1,4 +1,4 @@
-﻿namespace NanoKv.Core.Protocol;
+﻿namespace NanoKV.Core.Protocol;
 
 public readonly ref struct ParsedCommand
 {
