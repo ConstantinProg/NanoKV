@@ -1,11 +1,62 @@
-﻿using NanoKV.Core.Storage;
-using System;
-using System.Linq;
-using System.Threading.Tasks;
-using Xunit;
+﻿using NanoKV.Core.Models;
+using NanoKV.Core.Storage;
+
+namespace NanoKV.Core.Tests;
 
 public class SimpleStoreTests
 {
+    [Fact]
+    public void Set_And_Get_Should_Return_UserProfile()
+    {
+        using var store = new SimpleStore();
+
+        var profile = new UserProfile
+        {
+            Id = 1,
+            Username = "konstantin",
+            CreatedAt = new DateTime(2026, 5, 7, 12, 0, 0, DateTimeKind.Utc)
+        };
+
+        store.Set("user:1", profile);
+
+        var result = store.Get("user:1");
+
+        Assert.NotNull(result);
+        Assert.Equal(profile.Id, result.Id);
+        Assert.Equal(profile.Username, result.Username);
+        Assert.Equal(profile.CreatedAt, result.CreatedAt);
+    }
+
+    [Fact]
+    public void Get_Missing_Key_Should_Return_Null()
+    {
+        using var store = new SimpleStore();
+
+        var result = store.Get("missing");
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void Delete_Should_Remove_Profile()
+    {
+        using var store = new SimpleStore();
+
+        var profile = new UserProfile
+        {
+            Id = 1,
+            Username = "user-1",
+            CreatedAt = DateTime.UtcNow
+        };
+
+        store.Set("user:1", profile);
+        store.Delete("user:1");
+
+        var result = store.Get("user:1");
+
+        Assert.Null(result);
+    }
+
     [Fact]
     public async Task Concurrent_Access_Should_Be_Correct()
     {
@@ -19,15 +70,20 @@ public class SimpleStoreTests
 
         for (int i = 0; i < writers; i++)
         {
-            int local = i;
+            int writerId = i;
+
             tasks[i] = Task.Run(() =>
             {
                 for (int j = 0; j < operationsPerTask; j++)
                 {
-                    var key = $"key-{j}";
-                    var value = BitConverter.GetBytes(local);
+                    var profile = new UserProfile
+                    {
+                        Id = writerId,
+                        Username = $"user-{writerId}-{j}",
+                        CreatedAt = DateTime.UtcNow
+                    };
 
-                    store.Set(key, value);
+                    store.Set($"key-{j}", profile);
                 }
             });
         }
@@ -38,8 +94,7 @@ public class SimpleStoreTests
             {
                 for (int j = 0; j < operationsPerTask; j++)
                 {
-                    var key = $"key-{j}";
-                    store.Get(key);
+                    store.Get($"key-{j}");
                 }
             });
         }
@@ -48,10 +103,9 @@ public class SimpleStoreTests
 
         for (int i = 0; i < operationsPerTask; i++)
         {
-            var key = $"key-{i}";
-            var value = store.Get(key);
+            var result = store.Get($"key-{i}");
 
-            Assert.NotNull(value);
+            Assert.NotNull(result);
         }
 
         var stats = store.GetStatistics();
