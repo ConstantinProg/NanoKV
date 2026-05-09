@@ -9,23 +9,29 @@ public sealed class RingBuffer
 
     public RingBuffer(int capacity)
     {
+        if (capacity <= 0)
+            throw new ArgumentOutOfRangeException(nameof(capacity));
+
         _buffer = new byte[capacity];
     }
 
     public int Count => _count;
     public int Capacity => _buffer.Length;
 
+    public void WriteByte(byte value)
+    {
+        if (_count == _buffer.Length)
+            throw new InvalidOperationException("Buffer overflow");
+
+        _buffer[_tail] = value;
+        _tail = (_tail + 1) % _buffer.Length;
+        _count++;
+    }
+
     public void Write(ReadOnlySpan<byte> data)
     {
         foreach (var b in data)
-        {
-            if (_count == _buffer.Length)
-                throw new InvalidOperationException("Buffer overflow");
-
-            _buffer[_tail] = b;
-            _tail = (_tail + 1) % _buffer.Length;
-            _count++;
-        }
+            WriteByte(b);
     }
 
     public bool TryReadLine(out byte[] line)
@@ -52,10 +58,8 @@ public sealed class RingBuffer
                     _head = (_head + 1) % _buffer.Length;
                 }
 
-                // skip '\n'
                 _head = (_head + 1) % _buffer.Length;
-
-                _count -= (length + 1);
+                _count -= length + 1;
 
                 line = result;
                 return true;

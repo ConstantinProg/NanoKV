@@ -15,7 +15,7 @@ public sealed class StoreCommandHandler : ICommandHandler
         _store = store;
     }
 
-    public ValueTask<byte[]> HandleAsync(ParsedCommand cmd)
+    public byte[] Handle(ParsedCommand cmd)
     {
         var command = Encoding.UTF8.GetString(cmd.Command).ToUpperInvariant();
 
@@ -24,14 +24,14 @@ public sealed class StoreCommandHandler : ICommandHandler
             "SET" => HandleSet(cmd),
             "GET" => HandleGet(cmd),
             "DELETE" => HandleDelete(cmd),
-            _ => ValueTask.FromResult(Encode("-ERR Unknown command\r\n"))
+            _ => Encode("-ERR Unknown command\r\n")
         };
     }
 
-    private ValueTask<byte[]> HandleSet(ParsedCommand cmd)
+    private byte[] HandleSet(ParsedCommand cmd)
     {
         if (cmd.Key.IsEmpty || cmd.Value.IsEmpty)
-            return ValueTask.FromResult(Encode("-ERR wrong number of arguments\r\n"));
+            return Encode("-ERR wrong number of arguments\r\n");
 
         var key = Encoding.UTF8.GetString(cmd.Key);
 
@@ -40,44 +40,44 @@ public sealed class StoreCommandHandler : ICommandHandler
             var profile = JsonSerializer.Deserialize<UserProfile>(cmd.Value);
 
             if (profile is null)
-                return ValueTask.FromResult(Encode("-ERR invalid json\r\n"));
+                return Encode("-ERR invalid json\r\n");
 
             _store.Set(key, profile);
 
-            return ValueTask.FromResult(Encode("OK\r\n"));
+            return Encode("OK\r\n");
         }
         catch (JsonException)
         {
-            return ValueTask.FromResult(Encode("-ERR invalid json\r\n"));
+            return Encode("-ERR invalid json\r\n");
         }
     }
 
-    private ValueTask<byte[]> HandleGet(ParsedCommand cmd)
+    private byte[] HandleGet(ParsedCommand cmd)
     {
         if (cmd.Key.IsEmpty)
-            return ValueTask.FromResult(Encode("-ERR wrong number of arguments\r\n"));
+            return Encode("-ERR wrong number of arguments\r\n");
 
         var key = Encoding.UTF8.GetString(cmd.Key);
         var profile = _store.Get(key);
 
         if (profile is null)
-            return ValueTask.FromResult(Encode("(nil)\r\n"));
+            return Encode("(nil)\r\n");
 
         var json = JsonSerializer.Serialize(profile);
 
-        return ValueTask.FromResult(Encode($"{json}\r\n"));
+        return Encode($"{json}\r\n");
     }
 
-    private ValueTask<byte[]> HandleDelete(ParsedCommand cmd)
+    private byte[] HandleDelete(ParsedCommand cmd)
     {
         if (cmd.Key.IsEmpty)
-            return ValueTask.FromResult(Encode("-ERR wrong number of arguments\r\n"));
+            return Encode("-ERR wrong number of arguments\r\n");
 
         var key = Encoding.UTF8.GetString(cmd.Key);
 
         _store.Delete(key);
 
-        return ValueTask.FromResult(Encode("OK\r\n"));
+        return Encode("OK\r\n");
     }
 
     private static byte[] Encode(string text)

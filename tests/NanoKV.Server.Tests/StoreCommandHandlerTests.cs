@@ -42,7 +42,7 @@ public class StoreCommandHandlerTests
         var profile = CreateProfile();
         var json = JsonSerializer.Serialize(profile);
 
-        var response = await handler.HandleAsync(Parse($"SET user:1 {json}"));
+        var response = handler.Handle(Parse($"SET user:1 {json}"));
 
         Assert.Equal("OK\r\n", AsString(response));
     }
@@ -56,9 +56,9 @@ public class StoreCommandHandlerTests
         var profile = CreateProfile();
         var json = JsonSerializer.Serialize(profile);
 
-        await handler.HandleAsync(Parse($"SET user:1 {json}"));
+        handler.Handle(Parse($"SET user:1 {json}"));
 
-        var response = await handler.HandleAsync(Parse("GET user:1"));
+        var response = handler.Handle(Parse("GET user:1"));
         var responseText = AsString(response).TrimEnd('\r', '\n');
 
         var result = JsonSerializer.Deserialize<UserProfile>(responseText);
@@ -75,7 +75,7 @@ public class StoreCommandHandlerTests
         using var store = new SimpleStore();
         var handler = new StoreCommandHandler(store);
 
-        var response = await handler.HandleAsync(Parse("GET user:1"));
+        var response = handler.Handle(Parse("GET user:1"));
 
         Assert.Equal("(nil)\r\n", AsString(response));
     }
@@ -89,10 +89,10 @@ public class StoreCommandHandlerTests
         var profile = CreateProfile();
         var json = JsonSerializer.Serialize(profile);
 
-        await handler.HandleAsync(Parse($"SET user:1 {json}"));
+        handler.Handle(Parse($"SET user:1 {json}"));
 
-        var deleteResponse = await handler.HandleAsync(Parse("DELETE user:1"));
-        var getResponse = await handler.HandleAsync(Parse("GET user:1"));
+        var deleteResponse = handler.Handle(Parse("DELETE user:1"));
+        var getResponse = handler.Handle(Parse("GET user:1"));
 
         Assert.Equal("OK\r\n", AsString(deleteResponse));
         Assert.Equal("(nil)\r\n", AsString(getResponse));
@@ -104,7 +104,7 @@ public class StoreCommandHandlerTests
         using var store = new SimpleStore();
         var handler = new StoreCommandHandler(store);
 
-        var response = await handler.HandleAsync(Parse("PING"));
+        var response = handler.Handle(Parse("PING"));
 
         Assert.Equal("-ERR Unknown command\r\n", AsString(response));
     }
@@ -115,7 +115,7 @@ public class StoreCommandHandlerTests
         using var store = new SimpleStore();
         var handler = new StoreCommandHandler(store);
 
-        var response = await handler.HandleAsync(Parse("SET"));
+        var response = handler.Handle(Parse("SET"));
 
         Assert.Equal("-ERR wrong number of arguments\r\n", AsString(response));
     }
@@ -126,7 +126,7 @@ public class StoreCommandHandlerTests
         using var store = new SimpleStore();
         var handler = new StoreCommandHandler(store);
 
-        var response = await handler.HandleAsync(Parse("SET user:1"));
+        var response = handler.Handle(Parse("SET user:1"));
 
         Assert.Equal("-ERR wrong number of arguments\r\n", AsString(response));
     }
@@ -137,7 +137,7 @@ public class StoreCommandHandlerTests
         using var store = new SimpleStore();
         var handler = new StoreCommandHandler(store);
 
-        var response = await handler.HandleAsync(Parse("SET user:1 invalid-json"));
+        var response = handler.Handle(Parse("SET user:1 invalid-json"));
 
         Assert.Equal("-ERR invalid json\r\n", AsString(response));
     }
@@ -148,7 +148,7 @@ public class StoreCommandHandlerTests
         using var store = new SimpleStore();
         var handler = new StoreCommandHandler(store);
 
-        var response = await handler.HandleAsync(Parse("GET"));
+        var response = handler.Handle(Parse("GET"));
 
         Assert.Equal("-ERR wrong number of arguments\r\n", AsString(response));
     }
@@ -159,7 +159,7 @@ public class StoreCommandHandlerTests
         using var store = new SimpleStore();
         var handler = new StoreCommandHandler(store);
 
-        var response = await handler.HandleAsync(Parse("DELETE"));
+        var response = handler.Handle(Parse("DELETE"));
 
         Assert.Equal("-ERR wrong number of arguments\r\n", AsString(response));
     }
