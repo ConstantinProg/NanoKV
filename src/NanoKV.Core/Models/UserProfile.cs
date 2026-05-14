@@ -1,6 +1,9 @@
-﻿namespace NanoKV.Core.Models;
+﻿using NanoKV.SerializationGenerator;
 
-public sealed class UserProfile
+namespace NanoKV.Core.Models;
+
+[GenerateBinarySerializer]
+public sealed partial class UserProfile
 {
     public int Id { get; set; }
     public string Username { get; set; } = string.Empty;

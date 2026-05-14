@@ -1,5 +1,4 @@
-﻿using System.Text.Json;
-using NanoKV.Core.Models;
+﻿using NanoKV.Core.Models;
 
 namespace NanoKV.Core.Storage;
 
@@ -16,7 +15,7 @@ public sealed class SimpleStore : IDisposable
     {
         ArgumentNullException.ThrowIfNull(profile);
 
-        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(profile);
+        byte[] bytes = profile.SerializeToBinary();
 
         _lock.EnterWriteLock();
 
@@ -43,7 +42,7 @@ public sealed class SimpleStore : IDisposable
 
             Interlocked.Increment(ref _getCount);
 
-            return JsonSerializer.Deserialize<UserProfile>(bytes);
+            return UserProfile.DeserializeFromBinary(bytes);
         }
         finally
         {
