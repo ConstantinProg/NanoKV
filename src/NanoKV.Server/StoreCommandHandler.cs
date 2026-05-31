@@ -15,94 +15,87 @@ public sealed class StoreCommandHandler : ICommandHandler
         _store = store;
     }
 
-    public byte[] Handle(ParsedCommand cmd)
+    public byte[] Handle(ParsedCommand command)
     {
-        string command = Encoding.UTF8.GetString(cmd.Command).ToUpperInvariant();
+        if (command.IsEmpty)
+            return ProtocolResponse.Error("empty command");
 
-        return command switch
+        return command.Type switch
         {
-            "SET" => HandleSet(cmd),
-            "GET" => HandleGet(cmd),
-            "DELETE" => HandleDelete(cmd),
-            _ => Encode("-ERR Unknown command\r\n")
+            CommandType.Set => HandleSet(command),
+            CommandType.Get => HandleGet(command),
+            CommandType.Delete => HandleDelete(command),
+            CommandType.Stats => HandleStats(command),
+            CommandType.Unknown => ProtocolResponse.Error("unknown command"),
+            _ => ProtocolResponse.Error("unknown command")
         };
     }
 
-    private byte[] HandleSet(ParsedCommand cmd)
+    private byte[] HandleSet(ParsedCommand command)
     {
-        if (cmd.Key.IsEmpty || cmd.Value.IsEmpty)
-            return Encode("-ERR wrong number of arguments\r\n");
+        if (command.Key.IsEmpty || command.Value.IsEmpty)
+            return ProtocolResponse.Error("SET requires key and non-empty value");
 
-        string key = Encoding.UTF8.GetString(cmd.Key);
+        string key = Encoding.UTF8.GetString(command.Key);
 
         try
         {
-            _store.Set(key, cmd.Value);
-            return Encode("OK\r\n");
+            _store.Set(key, command.Value);
+            return ProtocolResponse.Ok();
         }
         catch (ArgumentException)
         {
-            return Encode("-ERR invalid key\r\n");
+            return ProtocolResponse.Error("invalid key");
         }
     }
 
-    private byte[] HandleGet(ParsedCommand cmd)
+    private byte[] HandleGet(ParsedCommand command)
     {
-        if (cmd.Key.IsEmpty)
-            return Encode("-ERR wrong number of arguments\r\n");
+        if (command.Key.IsEmpty || !command.Value.IsEmpty)
+            return ProtocolResponse.Error("GET requires exactly one key");
 
-        string key = Encoding.UTF8.GetString(cmd.Key);
+        string key = Encoding.UTF8.GetString(command.Key);
 
         try
         {
-            if (!_store.TryGet(key, out byte[]? value))
-                return Encode("(nil)\r\n");
-
-            return EncodeBulkString(value);
+            return _store.TryGet(key, out byte[]? value)
+                ? ProtocolResponse.BulkString(value)
+                : ProtocolResponse.NullBulkString();
         }
         catch (ArgumentException)
         {
-            return Encode("-ERR invalid key\r\n");
+            return ProtocolResponse.Error("invalid key");
         }
     }
 
-    private byte[] HandleDelete(ParsedCommand cmd)
+    private byte[] HandleDelete(ParsedCommand command)
     {
-        if (cmd.Key.IsEmpty)
-            return Encode("-ERR wrong number of arguments\r\n");
+        if (command.Key.IsEmpty || !command.Value.IsEmpty)
+            return ProtocolResponse.Error("DELETE requires exactly one key");
 
-        string key = Encoding.UTF8.GetString(cmd.Key);
+        string key = Encoding.UTF8.GetString(command.Key);
 
         try
         {
             _store.Delete(key);
-            return Encode("OK\r\n");
+            return ProtocolResponse.Ok();
         }
         catch (ArgumentException)
         {
-            return Encode("-ERR invalid key\r\n");
+            return ProtocolResponse.Error("invalid key");
         }
     }
 
-    private static byte[] Encode(string text)
+    private byte[] HandleStats(ParsedCommand command)
     {
-        return Encoding.UTF8.GetBytes(text);
-    }
+        if (!command.Key.IsEmpty || !command.Value.IsEmpty)
+            return ProtocolResponse.Error("STATS does not accept arguments");
 
-    private static byte[] EncodeBulkString(byte[] value)
-    {
-        byte[] prefix = Encoding.UTF8.GetBytes(value.Length.ToString());
-        byte[] result = new byte[prefix.Length + 2 + value.Length + 2];
+        StoreStatistics statistics = _store.GetStatistics();
 
-        prefix.CopyTo(result, 0);
-        result[prefix.Length] = (byte)'\r';
-        result[prefix.Length + 1] = (byte)'\n';
+        string payload =
+            $"sets={statistics.SetCount};gets={statistics.GetCount};deletes={statistics.DeleteCount}";
 
-        value.CopyTo(result, prefix.Length + 2);
-
-        result[^2] = (byte)'\r';
-        result[^1] = (byte)'\n';
-
-        return result;
+        return ProtocolResponse.BulkString(Encoding.ASCII.GetBytes(payload));
     }
 }

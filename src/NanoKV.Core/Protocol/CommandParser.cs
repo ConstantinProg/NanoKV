@@ -3,13 +3,11 @@
 public static class CommandParser
 {
     private const byte Space = (byte)' ';
+    private const byte CarriageReturn = (byte)'\r';
 
     public static ParsedCommand Parse(ReadOnlySpan<byte> input)
     {
-        if (input.IsEmpty)
-            return default;
-
-        input = TrimSpaces(input);
+        input = TrimLine(input);
 
         if (input.IsEmpty)
             return default;
@@ -18,47 +16,114 @@ public static class CommandParser
 
         if (firstSpace < 0)
         {
+            CommandType type = GetCommandType(input);
+
             return new ParsedCommand(
-                input,
+                type,
                 ReadOnlySpan<byte>.Empty,
-                ReadOnlySpan<byte>.Empty);
+                ReadOnlySpan<byte>.Empty,
+                hasCommand: true);
         }
 
-        var command = input.Slice(0, firstSpace);
+        ReadOnlySpan<byte> command = input[..firstSpace];
+        ReadOnlySpan<byte> remainder = TrimLeadingSpaces(input[(firstSpace + 1)..]);
 
-        var remainder = TrimSpaces(input.Slice(firstSpace + 1));
+        CommandType commandType = GetCommandType(command);
+
         if (remainder.IsEmpty)
         {
             return new ParsedCommand(
-                command,
+                commandType,
                 ReadOnlySpan<byte>.Empty,
-                ReadOnlySpan<byte>.Empty);
+                ReadOnlySpan<byte>.Empty,
+                hasCommand: true);
         }
 
         int secondSpace = remainder.IndexOf(Space);
 
         if (secondSpace < 0)
         {
-            return new ParsedCommand(command, remainder, ReadOnlySpan<byte>.Empty);
+            return new ParsedCommand(
+                commandType,
+                remainder,
+                ReadOnlySpan<byte>.Empty,
+                hasCommand: true);
         }
 
-        var key = remainder.Slice(0, secondSpace);
-        var value = TrimSpaces(remainder.Slice(secondSpace + 1));
+        ReadOnlySpan<byte> key = remainder[..secondSpace];
+        ReadOnlySpan<byte> value = TrimLeadingSpaces(remainder[(secondSpace + 1)..]);
 
-        return new ParsedCommand(command, key, value);
+        return new ParsedCommand(
+            commandType,
+            key,
+            value,
+            hasCommand: true);
     }
 
-    private static ReadOnlySpan<byte> TrimSpaces(ReadOnlySpan<byte> span)
+    private static CommandType GetCommandType(ReadOnlySpan<byte> command)
     {
-        int start = 0;
+        if (EqualsAsciiIgnoreCase(command, "SET"u8))
+            return CommandType.Set;
+
+        if (EqualsAsciiIgnoreCase(command, "GET"u8))
+            return CommandType.Get;
+
+        if (EqualsAsciiIgnoreCase(command, "DELETE"u8))
+            return CommandType.Delete;
+
+        if (EqualsAsciiIgnoreCase(command, "STATS"u8))
+            return CommandType.Stats;
+
+        return CommandType.Unknown;
+    }
+
+    private static bool EqualsAsciiIgnoreCase(
+        ReadOnlySpan<byte> left,
+        ReadOnlySpan<byte> right)
+    {
+        if (left.Length != right.Length)
+            return false;
+
+        for (int i = 0; i < left.Length; i++)
+        {
+            if (ToUpperAscii(left[i]) != right[i])
+                return false;
+        }
+
+        return true;
+    }
+
+    private static byte ToUpperAscii(byte value)
+    {
+        return value is >= (byte)'a' and <= (byte)'z'
+            ? (byte)(value - 32)
+            : value;
+    }
+
+    private static ReadOnlySpan<byte> TrimLine(ReadOnlySpan<byte> span)
+    {
+        span = TrimLeadingSpaces(span);
+
         int end = span.Length - 1;
 
-        while (start <= end && (span[start] == Space || span[start] == '\r'))
-            start++;
-
-        while (end >= start && (span[end] == Space || span[end] == '\r'))
+        while (end >= 0 && IsTrailingLineWhitespace(span[end]))
             end--;
 
-        return span.Slice(start, end - start + 1);
+        return span[..(end + 1)];
+    }
+
+    private static ReadOnlySpan<byte> TrimLeadingSpaces(ReadOnlySpan<byte> span)
+    {
+        int start = 0;
+
+        while (start < span.Length && span[start] == Space)
+            start++;
+
+        return span[start..];
+    }
+
+    private static bool IsTrailingLineWhitespace(byte value)
+    {
+        return value is Space or CarriageReturn;
     }
 }

@@ -1,146 +1,168 @@
-﻿using NanoKV.Core.Storage;
-using System;
+﻿using NanoKV.Core.Protocol;
+using NanoKV.Core.Storage;
+using NanoKV.Server;
 using System.Text;
 using Xunit;
 
-namespace NanoKV.Core.Tests.Storage;
+namespace NanoKV.Server.Tests;
 
-public sealed class SimpleStoreTests
+public sealed class StoreCommandHandlerTests
 {
     [Fact]
-    public void Set_StoresByteValue()
+    public void Handle_Set_ReturnsOk()
     {
         using var store = new SimpleStore();
+        var handler = new StoreCommandHandler(store);
 
-        store.Set("key", Encoding.UTF8.GetBytes("value"));
+        byte[] response = Handle(handler, "SET key value");
+
+        Assert.Equal("+OK\r\n", Decode(response));
+    }
+
+    [Fact]
+    public void Handle_Set_StoresValue()
+    {
+        using var store = new SimpleStore();
+        var handler = new StoreCommandHandler(store);
+
+        Handle(handler, "SET key value");
 
         bool found = store.TryGet("key", out byte[]? value);
 
         Assert.True(found);
         Assert.NotNull(value);
-        Assert.Equal("value", Encoding.UTF8.GetString(value));
+        Assert.Equal("value", Decode(value));
     }
 
     [Fact]
-    public void Set_CopiesInputValue()
+    public void Handle_SetWithoutValue_ReturnsError()
     {
         using var store = new SimpleStore();
+        var handler = new StoreCommandHandler(store);
 
-        byte[] source = Encoding.UTF8.GetBytes("value");
+        byte[] response = Handle(handler, "SET key");
 
-        store.Set("key", source);
-
-        source[0] = (byte)'X';
-
-        bool found = store.TryGet("key", out byte[]? value);
-
-        Assert.True(found);
-        Assert.Equal("value", Encoding.UTF8.GetString(value!));
+        Assert.Equal("-ERR SET requires key and non-empty value\r\n", Decode(response));
     }
 
     [Fact]
-    public void TryGet_ReturnsCopy()
+    public void Handle_GetExistingKey_ReturnsBulkString()
     {
         using var store = new SimpleStore();
+        store.Set("key", "value"u8);
 
-        store.Set("key", Encoding.UTF8.GetBytes("value"));
+        var handler = new StoreCommandHandler(store);
 
-        store.TryGet("key", out byte[]? first);
-        first![0] = (byte)'X';
+        byte[] response = Handle(handler, "GET key");
 
-        store.TryGet("key", out byte[]? second);
-
-        Assert.Equal("value", Encoding.UTF8.GetString(second!));
+        Assert.Equal("$5\r\nvalue\r\n", Decode(response));
     }
 
     [Fact]
-    public void TryGet_ReturnsFalse_WhenKeyDoesNotExist()
+    public void Handle_GetMissingKey_ReturnsNullBulkString()
     {
         using var store = new SimpleStore();
+        var handler = new StoreCommandHandler(store);
 
-        bool found = store.TryGet("missing", out byte[]? value);
+        byte[] response = Handle(handler, "GET missing");
 
-        Assert.False(found);
-        Assert.Null(value);
+        Assert.Equal("$-1\r\n", Decode(response));
     }
 
     [Fact]
-    public void Delete_RemovesExistingKey()
+    public void Handle_GetWithExtraArgument_ReturnsError()
     {
         using var store = new SimpleStore();
+        var handler = new StoreCommandHandler(store);
 
-        store.Set("key", Encoding.UTF8.GetBytes("value"));
+        byte[] response = Handle(handler, "GET key extra");
 
-        bool deleted = store.Delete("key");
-        bool found = store.TryGet("key", out byte[]? value);
-
-        Assert.True(deleted);
-        Assert.False(found);
-        Assert.Null(value);
+        Assert.Equal("-ERR GET requires exactly one key\r\n", Decode(response));
     }
 
     [Fact]
-    public void Delete_ReturnsFalse_WhenKeyDoesNotExist()
+    public void Handle_Delete_ReturnsOk()
     {
         using var store = new SimpleStore();
+        store.Set("key", "value"u8);
 
-        bool deleted = store.Delete("missing");
+        var handler = new StoreCommandHandler(store);
 
-        Assert.False(deleted);
-    }
+        byte[] response = Handle(handler, "DELETE key");
 
-    [Theory]
-    [InlineData(null)]
-    [InlineData("")]
-    [InlineData(" ")]
-    [InlineData("\t")]
-    public void Set_Throws_WhenKeyIsInvalid(string? key)
-    {
-        using var store = new SimpleStore();
-
-        Assert.ThrowsAny<ArgumentException>(() =>
-            store.Set(key!, Encoding.UTF8.GetBytes("value")));
-    }
-
-    [Theory]
-    [InlineData(null)]
-    [InlineData("")]
-    [InlineData(" ")]
-    [InlineData("\t")]
-    public void TryGet_Throws_WhenKeyIsInvalid(string? key)
-    {
-        using var store = new SimpleStore();
-
-        Assert.ThrowsAny<ArgumentException>(() =>
-            store.TryGet(key!, out _));
-    }
-
-    [Theory]
-    [InlineData(null)]
-    [InlineData("")]
-    [InlineData(" ")]
-    [InlineData("\t")]
-    public void Delete_Throws_WhenKeyIsInvalid(string? key)
-    {
-        using var store = new SimpleStore();
-
-        Assert.ThrowsAny<ArgumentException>(() =>
-            store.Delete(key!));
+        Assert.Equal("+OK\r\n", Decode(response));
+        Assert.False(store.TryGet("key", out _));
     }
 
     [Fact]
-    public void GetStatistics_ReturnsOperationCounters()
+    public void Handle_DeleteWithExtraArgument_ReturnsError()
     {
         using var store = new SimpleStore();
+        var handler = new StoreCommandHandler(store);
 
-        store.Set("key", Encoding.UTF8.GetBytes("value"));
-        store.TryGet("key", out _);
-        store.Delete("key");
+        byte[] response = Handle(handler, "DELETE key extra");
 
-        StoreStatistics statistics = store.GetStatistics();
+        Assert.Equal("-ERR DELETE requires exactly one key\r\n", Decode(response));
+    }
 
-        Assert.Equal(1, statistics.SetCount);
-        Assert.Equal(1, statistics.GetCount);
-        Assert.Equal(1, statistics.DeleteCount);
+    [Fact]
+    public void Handle_Stats_ReturnsBulkString()
+    {
+        using var store = new SimpleStore();
+        var handler = new StoreCommandHandler(store);
+
+        Handle(handler, "SET key value");
+        Handle(handler, "GET key");
+        Handle(handler, "DELETE key");
+
+        byte[] response = Handle(handler, "STATS");
+
+        Assert.Equal("$23\r\nsets=1;gets=1;deletes=1\r\n", Decode(response));
+    }
+
+    [Fact]
+    public void Handle_StatsWithArguments_ReturnsError()
+    {
+        using var store = new SimpleStore();
+        var handler = new StoreCommandHandler(store);
+
+        byte[] response = Handle(handler, "STATS extra");
+
+        Assert.Equal("-ERR STATS does not accept arguments\r\n", Decode(response));
+    }
+
+    [Fact]
+    public void Handle_UnknownCommand_ReturnsError()
+    {
+        using var store = new SimpleStore();
+        var handler = new StoreCommandHandler(store);
+
+        byte[] response = Handle(handler, "PING");
+
+        Assert.Equal("-ERR unknown command\r\n", Decode(response));
+    }
+
+    [Fact]
+    public void Handle_EmptyCommand_ReturnsError()
+    {
+        using var store = new SimpleStore();
+        var handler = new StoreCommandHandler(store);
+
+        byte[] response = Handle(handler, "   ");
+
+        Assert.Equal("-ERR empty command\r\n", Decode(response));
+    }
+
+    private static byte[] Handle(StoreCommandHandler handler, string input)
+    {
+        byte[] bytes = Encoding.ASCII.GetBytes(input);
+        ParsedCommand command = CommandParser.Parse(bytes);
+
+        return handler.Handle(command);
+    }
+
+    private static string Decode(byte[] value)
+    {
+        return Encoding.ASCII.GetString(value);
     }
 }

@@ -2,19 +2,25 @@
 
 public readonly ref struct ParsedCommand
 {
-    public ReadOnlySpan<byte> Command { get; }
-    public ReadOnlySpan<byte> Key { get; }
-    public ReadOnlySpan<byte> Value { get; }
-
     public ParsedCommand(
-        ReadOnlySpan<byte> command,
+        CommandType type,
         ReadOnlySpan<byte> key,
-        ReadOnlySpan<byte> value)
+        ReadOnlySpan<byte> value,
+        bool hasCommand)
     {
-        Command = command;
+        Type = type;
         Key = key;
         Value = value;
+        HasCommand = hasCommand;
     }
 
-    public bool IsEmpty => Command.IsEmpty;
+    public CommandType Type { get; }
+
+    public ReadOnlySpan<byte> Key { get; }
+
+    public ReadOnlySpan<byte> Value { get; }
+
+    public bool HasCommand { get; }
+
+    public bool IsEmpty => !HasCommand;
 }

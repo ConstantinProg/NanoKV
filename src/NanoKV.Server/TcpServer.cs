@@ -76,7 +76,7 @@ public sealed class TcpServer
 
     private async Task ProcessClientAsync(Socket client, CancellationToken token)
     {
-        var pool = ArrayPool<byte>.Shared;
+        ArrayPool<byte> pool = ArrayPool<byte>.Shared;
         byte[] buffer = pool.Rent(ReceiveBufferSize);
 
         var ring = new RingBuffer(MaxIncomingMessageBytes + 1);
@@ -90,15 +90,12 @@ public sealed class TcpServer
                 if (bytesRead == 0)
                     break;
 
-                var received = buffer.AsSpan(0, bytesRead);
                 for (int i = 0; i < bytesRead; i++)
                 {
                     byte value = buffer[i];
 
                     if (ring.Count >= MaxIncomingMessageBytes && value != (byte)'\n')
-                    {
                         return;
-                    }
 
                     ring.WriteByte(value);
 
@@ -111,7 +108,9 @@ public sealed class TcpServer
                             return;
 
                         byte[] response = ProcessCommand(line, client.RemoteEndPoint);
-                        await client.SendAsync(response, token);
+
+                        if (response.Length > 0)
+                            await client.SendAsync(response, token);
                     }
                 }
             }
@@ -132,22 +131,21 @@ public sealed class TcpServer
             client.Dispose();
         }
     }
+
     private byte[] ProcessCommand(byte[] line, EndPoint? remoteEndPoint)
     {
-        var command = CommandParser.Parse(line);
+        ParsedCommand command = CommandParser.Parse(line);
 
         if (command.IsEmpty)
-            return [];
+            return ProtocolResponse.Error("empty command");
 
-        string commandName = Encoding.UTF8
-            .GetString(command.Command)
-            .ToUpperInvariant();
+        string commandName = GetCommandName(command.Type);
 
         string? key = command.Key.IsEmpty
             ? null
             : Encoding.UTF8.GetString(command.Key);
 
-        using var activity = Telemetry.ActivitySource.StartActivity(
+        using Activity? activity = Telemetry.ActivitySource.StartActivity(
             "Process command",
             ActivityKind.Server);
 
@@ -156,21 +154,34 @@ public sealed class TcpServer
         activity?.SetTag("command.key", key);
         activity?.SetTag("net.peer", remoteEndPoint?.ToString());
 
-        var stopwatch = Stopwatch.StartNew();
+        Stopwatch stopwatch = Stopwatch.StartNew();
 
         byte[] response = _commandHandler.Handle(command);
 
         stopwatch.Stop();
 
         var tags = new TagList
-    {
-        { "command.name", commandName },
-        { "command.has_key", key is not null }
-    };
+        {
+            { "command.name", commandName },
+            { "command.has_key", key is not null }
+        };
 
         Telemetry.CommandsProcessed.Add(1, tags);
         Telemetry.CommandDuration.Record(stopwatch.Elapsed.TotalMilliseconds, tags);
 
         return response;
+    }
+
+    private static string GetCommandName(CommandType type)
+    {
+        return type switch
+        {
+            CommandType.Set => "SET",
+            CommandType.Get => "GET",
+            CommandType.Delete => "DELETE",
+            CommandType.Stats => "STATS",
+            CommandType.Unknown => "UNKNOWN",
+            _ => "UNKNOWN"
+        };
     }
 }
