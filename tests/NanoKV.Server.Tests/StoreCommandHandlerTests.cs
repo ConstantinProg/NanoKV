@@ -20,18 +20,43 @@ public sealed class StoreCommandHandlerTests
     }
 
     [Fact]
-    public void Handle_Set_StoresValue()
+    public void Handle_Set_StoresRawValue()
     {
         using var store = new SimpleStore();
         var handler = new StoreCommandHandler(store);
 
-        Handle(handler, "SET key value");
+        Handle(handler, "SET key hello world");
 
         bool found = store.TryGet("key", out byte[]? value);
 
         Assert.True(found);
         Assert.NotNull(value);
-        Assert.Equal("value", Decode(value));
+        Assert.Equal("hello world", Decode(value));
+    }
+
+    [Fact]
+    public void Handle_Set_DoesNotRequireJson()
+    {
+        using var store = new SimpleStore();
+        var handler = new StoreCommandHandler(store);
+
+        byte[] response = Handle(handler, "SET key plain-text-value");
+
+        Assert.Equal("+OK\r\n", Decode(response));
+
+        Assert.True(store.TryGet("key", out byte[]? value));
+        Assert.Equal("plain-text-value", Decode(value));
+    }
+
+    [Fact]
+    public void Handle_SetWithoutKey_ReturnsError()
+    {
+        using var store = new SimpleStore();
+        var handler = new StoreCommandHandler(store);
+
+        byte[] response = Handle(handler, "SET");
+
+        Assert.Equal("-ERR SET requires key and non-empty value\r\n", Decode(response));
     }
 
     [Fact]
@@ -70,6 +95,17 @@ public sealed class StoreCommandHandlerTests
     }
 
     [Fact]
+    public void Handle_GetWithoutKey_ReturnsError()
+    {
+        using var store = new SimpleStore();
+        var handler = new StoreCommandHandler(store);
+
+        byte[] response = Handle(handler, "GET");
+
+        Assert.Equal("-ERR GET requires exactly one key\r\n", Decode(response));
+    }
+
+    [Fact]
     public void Handle_GetWithExtraArgument_ReturnsError()
     {
         using var store = new SimpleStore();
@@ -81,7 +117,7 @@ public sealed class StoreCommandHandlerTests
     }
 
     [Fact]
-    public void Handle_Delete_ReturnsOk()
+    public void Handle_DeleteExistingKey_ReturnsOkAndRemovesValue()
     {
         using var store = new SimpleStore();
         store.Set("key", "value"u8);
@@ -92,6 +128,28 @@ public sealed class StoreCommandHandlerTests
 
         Assert.Equal("+OK\r\n", Decode(response));
         Assert.False(store.TryGet("key", out _));
+    }
+
+    [Fact]
+    public void Handle_DeleteMissingKey_ReturnsOk()
+    {
+        using var store = new SimpleStore();
+        var handler = new StoreCommandHandler(store);
+
+        byte[] response = Handle(handler, "DELETE missing");
+
+        Assert.Equal("+OK\r\n", Decode(response));
+    }
+
+    [Fact]
+    public void Handle_DeleteWithoutKey_ReturnsError()
+    {
+        using var store = new SimpleStore();
+        var handler = new StoreCommandHandler(store);
+
+        byte[] response = Handle(handler, "DELETE");
+
+        Assert.Equal("-ERR DELETE requires exactly one key\r\n", Decode(response));
     }
 
     [Fact]
@@ -121,7 +179,7 @@ public sealed class StoreCommandHandlerTests
     }
 
     [Fact]
-    public void Handle_StatsWithArguments_ReturnsError()
+    public void Handle_StatsWithArgument_ReturnsError()
     {
         using var store = new SimpleStore();
         var handler = new StoreCommandHandler(store);
@@ -155,7 +213,7 @@ public sealed class StoreCommandHandlerTests
 
     private static byte[] Handle(StoreCommandHandler handler, string input)
     {
-        byte[] bytes = Encoding.ASCII.GetBytes(input);
+        byte[] bytes = Encoding.UTF8.GetBytes(input);
         ParsedCommand command = CommandParser.Parse(bytes);
 
         return handler.Handle(command);
@@ -163,6 +221,6 @@ public sealed class StoreCommandHandlerTests
 
     private static string Decode(byte[] value)
     {
-        return Encoding.ASCII.GetString(value);
+        return Encoding.UTF8.GetString(value);
     }
 }

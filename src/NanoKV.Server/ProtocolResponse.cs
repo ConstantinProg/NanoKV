@@ -1,27 +1,36 @@
-﻿using System.Text;
+﻿using System.Buffers.Text;
+using System.Text;
 
 namespace NanoKV.Server;
 
 internal static class ProtocolResponse
 {
+    private static readonly byte[] OkResponse = "+OK\r\n"u8.ToArray();
+    private static readonly byte[] NullBulkStringResponse = "$-1\r\n"u8.ToArray();
+
     public static byte[] Ok()
     {
-        return "+OK\r\n"u8.ToArray();
+        return OkResponse;
     }
 
     public static byte[] NullBulkString()
     {
-        return "$-1\r\n"u8.ToArray();
+        return NullBulkStringResponse;
     }
 
     public static byte[] Error(string message)
     {
-        return Encoding.UTF8.GetBytes($"-ERR {message}\r\n");
+        return Encoding.ASCII.GetBytes($"-ERR {message}\r\n");
     }
 
     public static byte[] BulkString(ReadOnlySpan<byte> value)
     {
-        byte[] length = Encoding.ASCII.GetBytes(value.Length.ToString());
+        Span<byte> lengthBuffer = stackalloc byte[20];
+
+        if (!Utf8Formatter.TryFormat(value.Length, lengthBuffer, out int lengthBytesWritten))
+            throw new InvalidOperationException("Failed to format bulk string length.");
+
+        ReadOnlySpan<byte> length = lengthBuffer[..lengthBytesWritten];
 
         byte[] response = new byte[
             1 +
