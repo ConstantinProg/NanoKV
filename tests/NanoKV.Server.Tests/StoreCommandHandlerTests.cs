@@ -1,166 +1,146 @@
-﻿using NanoKV.Core.Models;
-using NanoKV.Core.Protocol;
-using NanoKV.Core.Storage;
-using NanoKV.Server;
+﻿using NanoKV.Core.Storage;
 using System;
 using System.Text;
-using System.Text.Json;
-using System.Threading.Tasks;
 using Xunit;
 
-namespace NanoKV.Tests;
+namespace NanoKV.Core.Tests.Storage;
 
-public class StoreCommandHandlerTests
+public sealed class SimpleStoreTests
 {
-    private static ParsedCommand Parse(string input)
+    [Fact]
+    public void Set_StoresByteValue()
     {
-        var bytes = Encoding.UTF8.GetBytes(input);
-        return CommandParser.Parse(bytes);
-    }
+        using var store = new SimpleStore();
 
-    private static string AsString(byte[] response)
-    {
-        return Encoding.UTF8.GetString(response);
-    }
+        store.Set("key", Encoding.UTF8.GetBytes("value"));
 
-    private static UserProfile CreateProfile()
-    {
-        return new UserProfile
-        {
-            Id = 1,
-            Username = "konstantin",
-            CreatedAt = new DateTime(2026, 5, 7, 12, 0, 0, DateTimeKind.Utc)
-        };
+        bool found = store.TryGet("key", out byte[]? value);
+
+        Assert.True(found);
+        Assert.NotNull(value);
+        Assert.Equal("value", Encoding.UTF8.GetString(value));
     }
 
     [Fact]
-    public async Task Set_Should_Return_Ok()
+    public void Set_CopiesInputValue()
     {
         using var store = new SimpleStore();
-        var handler = new StoreCommandHandler(store);
 
-        var profile = CreateProfile();
-        var json = JsonSerializer.Serialize(profile);
+        byte[] source = Encoding.UTF8.GetBytes("value");
 
-        var response = handler.Handle(Parse($"SET user:1 {json}"));
+        store.Set("key", source);
 
-        Assert.Equal("OK\r\n", AsString(response));
+        source[0] = (byte)'X';
+
+        bool found = store.TryGet("key", out byte[]? value);
+
+        Assert.True(found);
+        Assert.Equal("value", Encoding.UTF8.GetString(value!));
     }
 
     [Fact]
-    public async Task Get_Existing_Key_Should_Return_Profile_As_Json()
+    public void TryGet_ReturnsCopy()
     {
         using var store = new SimpleStore();
-        var handler = new StoreCommandHandler(store);
 
-        var profile = CreateProfile();
-        var json = JsonSerializer.Serialize(profile);
+        store.Set("key", Encoding.UTF8.GetBytes("value"));
 
-        handler.Handle(Parse($"SET user:1 {json}"));
+        store.TryGet("key", out byte[]? first);
+        first![0] = (byte)'X';
 
-        var response = handler.Handle(Parse("GET user:1"));
-        var responseText = AsString(response).TrimEnd('\r', '\n');
+        store.TryGet("key", out byte[]? second);
 
-        var result = JsonSerializer.Deserialize<UserProfile>(responseText);
-
-        Assert.NotNull(result);
-        Assert.Equal(profile.Id, result.Id);
-        Assert.Equal(profile.Username, result.Username);
-        Assert.Equal(profile.CreatedAt, result.CreatedAt);
+        Assert.Equal("value", Encoding.UTF8.GetString(second!));
     }
 
     [Fact]
-    public async Task Get_Missing_Key_Should_Return_Nil()
+    public void TryGet_ReturnsFalse_WhenKeyDoesNotExist()
     {
         using var store = new SimpleStore();
-        var handler = new StoreCommandHandler(store);
 
-        var response = handler.Handle(Parse("GET user:1"));
+        bool found = store.TryGet("missing", out byte[]? value);
 
-        Assert.Equal("(nil)\r\n", AsString(response));
+        Assert.False(found);
+        Assert.Null(value);
     }
 
     [Fact]
-    public async Task Delete_Should_Remove_Key()
+    public void Delete_RemovesExistingKey()
     {
         using var store = new SimpleStore();
-        var handler = new StoreCommandHandler(store);
 
-        var profile = CreateProfile();
-        var json = JsonSerializer.Serialize(profile);
+        store.Set("key", Encoding.UTF8.GetBytes("value"));
 
-        handler.Handle(Parse($"SET user:1 {json}"));
+        bool deleted = store.Delete("key");
+        bool found = store.TryGet("key", out byte[]? value);
 
-        var deleteResponse = handler.Handle(Parse("DELETE user:1"));
-        var getResponse = handler.Handle(Parse("GET user:1"));
-
-        Assert.Equal("OK\r\n", AsString(deleteResponse));
-        Assert.Equal("(nil)\r\n", AsString(getResponse));
+        Assert.True(deleted);
+        Assert.False(found);
+        Assert.Null(value);
     }
 
     [Fact]
-    public async Task Unknown_Command_Without_Arguments_Should_Return_Error()
+    public void Delete_ReturnsFalse_WhenKeyDoesNotExist()
     {
         using var store = new SimpleStore();
-        var handler = new StoreCommandHandler(store);
 
-        var response = handler.Handle(Parse("PING"));
+        bool deleted = store.Delete("missing");
 
-        Assert.Equal("-ERR Unknown command\r\n", AsString(response));
+        Assert.False(deleted);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("\t")]
+    public void Set_Throws_WhenKeyIsInvalid(string? key)
+    {
+        using var store = new SimpleStore();
+
+        Assert.ThrowsAny<ArgumentException>(() =>
+            store.Set(key!, Encoding.UTF8.GetBytes("value")));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("\t")]
+    public void TryGet_Throws_WhenKeyIsInvalid(string? key)
+    {
+        using var store = new SimpleStore();
+
+        Assert.ThrowsAny<ArgumentException>(() =>
+            store.TryGet(key!, out _));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("\t")]
+    public void Delete_Throws_WhenKeyIsInvalid(string? key)
+    {
+        using var store = new SimpleStore();
+
+        Assert.ThrowsAny<ArgumentException>(() =>
+            store.Delete(key!));
     }
 
     [Fact]
-    public async Task Set_Without_Arguments_Should_Return_Argument_Error()
+    public void GetStatistics_ReturnsOperationCounters()
     {
         using var store = new SimpleStore();
-        var handler = new StoreCommandHandler(store);
 
-        var response = handler.Handle(Parse("SET"));
+        store.Set("key", Encoding.UTF8.GetBytes("value"));
+        store.TryGet("key", out _);
+        store.Delete("key");
 
-        Assert.Equal("-ERR wrong number of arguments\r\n", AsString(response));
-    }
+        StoreStatistics statistics = store.GetStatistics();
 
-    [Fact]
-    public async Task Set_With_Key_But_Without_Value_Should_Return_Argument_Error()
-    {
-        using var store = new SimpleStore();
-        var handler = new StoreCommandHandler(store);
-
-        var response = handler.Handle(Parse("SET user:1"));
-
-        Assert.Equal("-ERR wrong number of arguments\r\n", AsString(response));
-    }
-
-    [Fact]
-    public async Task Set_With_Invalid_Json_Should_Return_Invalid_Json_Error()
-    {
-        using var store = new SimpleStore();
-        var handler = new StoreCommandHandler(store);
-
-        var response = handler.Handle(Parse("SET user:1 invalid-json"));
-
-        Assert.Equal("-ERR invalid json\r\n", AsString(response));
-    }
-
-    [Fact]
-    public async Task Get_Without_Key_Should_Return_Argument_Error()
-    {
-        using var store = new SimpleStore();
-        var handler = new StoreCommandHandler(store);
-
-        var response = handler.Handle(Parse("GET"));
-
-        Assert.Equal("-ERR wrong number of arguments\r\n", AsString(response));
-    }
-
-    [Fact]
-    public async Task Delete_Without_Key_Should_Return_Argument_Error()
-    {
-        using var store = new SimpleStore();
-        var handler = new StoreCommandHandler(store);
-
-        var response = handler.Handle(Parse("DELETE"));
-
-        Assert.Equal("-ERR wrong number of arguments\r\n", AsString(response));
+        Assert.Equal(1, statistics.SetCount);
+        Assert.Equal(1, statistics.GetCount);
+        Assert.Equal(1, statistics.DeleteCount);
     }
 }

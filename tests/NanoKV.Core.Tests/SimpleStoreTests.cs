@@ -1,4 +1,4 @@
-﻿using NanoKV.Core.Models;
+﻿using System.Text;
 using NanoKV.Core.Storage;
 
 namespace NanoKV.Core.Tests;
@@ -6,54 +6,44 @@ namespace NanoKV.Core.Tests;
 public class SimpleStoreTests
 {
     [Fact]
-    public void Set_And_Get_Should_Return_UserProfile()
+    public void Set_And_TryGet_Should_Return_Bytes()
     {
         using var store = new SimpleStore();
 
-        var profile = new UserProfile
-        {
-            Id = 1,
-            Username = "konstantin",
-            CreatedAt = new DateTime(2026, 5, 7, 12, 0, 0, DateTimeKind.Utc)
-        };
+        byte[] value = Encoding.UTF8.GetBytes("konstantin");
 
-        store.Set("user:1", profile);
+        store.Set("user:1", value);
 
-        var result = store.Get("user:1");
+        bool found = store.TryGet("user:1", out byte[]? result);
 
+        Assert.True(found);
         Assert.NotNull(result);
-        Assert.Equal(profile.Id, result.Id);
-        Assert.Equal(profile.Username, result.Username);
-        Assert.Equal(profile.CreatedAt, result.CreatedAt);
+        Assert.Equal(value, result);
     }
 
     [Fact]
-    public void Get_Missing_Key_Should_Return_Null()
+    public void TryGet_Missing_Key_Should_Return_False()
     {
         using var store = new SimpleStore();
 
-        var result = store.Get("missing");
+        bool found = store.TryGet("missing", out byte[]? result);
 
+        Assert.False(found);
         Assert.Null(result);
     }
 
     [Fact]
-    public void Delete_Should_Remove_Profile()
+    public void Delete_Should_Remove_Value()
     {
         using var store = new SimpleStore();
 
-        var profile = new UserProfile
-        {
-            Id = 1,
-            Username = "user-1",
-            CreatedAt = DateTime.UtcNow
-        };
+        store.Set("user:1", Encoding.UTF8.GetBytes("user-1"));
 
-        store.Set("user:1", profile);
-        store.Delete("user:1");
+        bool deleted = store.Delete("user:1");
+        bool found = store.TryGet("user:1", out byte[]? result);
 
-        var result = store.Get("user:1");
-
+        Assert.True(deleted);
+        Assert.False(found);
         Assert.Null(result);
     }
 
@@ -76,14 +66,8 @@ public class SimpleStoreTests
             {
                 for (int j = 0; j < operationsPerTask; j++)
                 {
-                    var profile = new UserProfile
-                    {
-                        Id = writerId,
-                        Username = $"user-{writerId}-{j}",
-                        CreatedAt = DateTime.UtcNow
-                    };
-
-                    store.Set($"key-{j}", profile);
+                    byte[] value = Encoding.UTF8.GetBytes($"user-{writerId}-{j}");
+                    store.Set($"key-{j}", value);
                 }
             });
         }
@@ -94,7 +78,7 @@ public class SimpleStoreTests
             {
                 for (int j = 0; j < operationsPerTask; j++)
                 {
-                    store.Get($"key-{j}");
+                    store.TryGet($"key-{j}", out _);
                 }
             });
         }
@@ -103,14 +87,15 @@ public class SimpleStoreTests
 
         for (int i = 0; i < operationsPerTask; i++)
         {
-            var result = store.Get($"key-{i}");
+            bool found = store.TryGet($"key-{i}", out byte[]? result);
 
+            Assert.True(found);
             Assert.NotNull(result);
         }
 
-        var stats = store.GetStatistics();
+        StoreStatistics stats = store.GetStatistics();
 
-        Assert.Equal(writers * operationsPerTask, stats.setCount);
-        Assert.Equal(readers * operationsPerTask + operationsPerTask, stats.getCount);
+        Assert.Equal(writers * operationsPerTask, stats.SetCount);
+        Assert.Equal(readers * operationsPerTask + operationsPerTask, stats.GetCount);
     }
 }

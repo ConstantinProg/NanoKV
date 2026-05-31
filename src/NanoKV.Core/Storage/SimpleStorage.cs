@@ -1,6 +1,4 @@
-﻿using NanoKV.Core.Models;
-
-namespace NanoKV.Core.Storage;
+﻿namespace NanoKV.Core.Storage;
 
 public sealed class SimpleStore : IDisposable
 {
@@ -11,18 +9,17 @@ public sealed class SimpleStore : IDisposable
     private long _getCount;
     private long _deleteCount;
 
-    public void Set(string key, UserProfile profile)
+    public void Set(string key, ReadOnlySpan<byte> value)
     {
-        ArgumentNullException.ThrowIfNull(profile);
+        ValidateKey(key);
 
-        byte[] bytes = profile.SerializeToBinary();
+        byte[] copy = value.ToArray();
 
         _lock.EnterWriteLock();
 
         try
         {
-            _storage[key] = bytes;
-
+            _storage[key] = copy;
             Interlocked.Increment(ref _setCount);
         }
         finally
@@ -31,18 +28,24 @@ public sealed class SimpleStore : IDisposable
         }
     }
 
-    public UserProfile? Get(string key)
+    public bool TryGet(string key, out byte[]? value)
     {
+        ValidateKey(key);
+
         _lock.EnterReadLock();
 
         try
         {
-            if (!_storage.TryGetValue(key, out byte[]? bytes))
-                return null;
-
             Interlocked.Increment(ref _getCount);
 
-            return UserProfile.DeserializeFromBinary(bytes);
+            if (!_storage.TryGetValue(key, out byte[]? stored))
+            {
+                value = null;
+                return false;
+            }
+
+            value = stored.ToArray();
+            return true;
         }
         finally
         {
@@ -50,15 +53,20 @@ public sealed class SimpleStore : IDisposable
         }
     }
 
-    public void Delete(string key)
+    public bool Delete(string key)
     {
+        ValidateKey(key);
+
         _lock.EnterWriteLock();
 
         try
         {
-            _storage.Remove(key);
+            bool removed = _storage.Remove(key);
 
-            Interlocked.Increment(ref _deleteCount);
+            if (removed)
+                Interlocked.Increment(ref _deleteCount);
+
+            return removed;
         }
         finally
         {
@@ -66,13 +74,21 @@ public sealed class SimpleStore : IDisposable
         }
     }
 
-    public (long setCount, long getCount, long deleteCount) GetStatistics()
+    public StoreStatistics GetStatistics()
     {
-        return (_setCount, _getCount, _deleteCount);
+        return new StoreStatistics(
+            Interlocked.Read(ref _setCount),
+            Interlocked.Read(ref _getCount),
+            Interlocked.Read(ref _deleteCount));
     }
 
     public void Dispose()
     {
         _lock.Dispose();
+    }
+
+    private static void ValidateKey(string key)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key);
     }
 }

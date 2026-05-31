@@ -1,6 +1,4 @@
 ﻿using System.Text;
-using System.Text.Json;
-using NanoKV.Core.Models;
 using NanoKV.Core.Protocol;
 using NanoKV.Core.Storage;
 
@@ -12,12 +10,14 @@ public sealed class StoreCommandHandler : ICommandHandler
 
     public StoreCommandHandler(SimpleStore store)
     {
+        ArgumentNullException.ThrowIfNull(store);
+
         _store = store;
     }
 
     public byte[] Handle(ParsedCommand cmd)
     {
-        var command = Encoding.UTF8.GetString(cmd.Command).ToUpperInvariant();
+        string command = Encoding.UTF8.GetString(cmd.Command).ToUpperInvariant();
 
         return command switch
         {
@@ -33,22 +33,16 @@ public sealed class StoreCommandHandler : ICommandHandler
         if (cmd.Key.IsEmpty || cmd.Value.IsEmpty)
             return Encode("-ERR wrong number of arguments\r\n");
 
-        var key = Encoding.UTF8.GetString(cmd.Key);
+        string key = Encoding.UTF8.GetString(cmd.Key);
 
         try
         {
-            var profile = JsonSerializer.Deserialize<UserProfile>(cmd.Value);
-
-            if (profile is null)
-                return Encode("-ERR invalid json\r\n");
-
-            _store.Set(key, profile);
-
+            _store.Set(key, cmd.Value);
             return Encode("OK\r\n");
         }
-        catch (JsonException)
+        catch (ArgumentException)
         {
-            return Encode("-ERR invalid json\r\n");
+            return Encode("-ERR invalid key\r\n");
         }
     }
 
@@ -57,15 +51,19 @@ public sealed class StoreCommandHandler : ICommandHandler
         if (cmd.Key.IsEmpty)
             return Encode("-ERR wrong number of arguments\r\n");
 
-        var key = Encoding.UTF8.GetString(cmd.Key);
-        var profile = _store.Get(key);
+        string key = Encoding.UTF8.GetString(cmd.Key);
 
-        if (profile is null)
-            return Encode("(nil)\r\n");
+        try
+        {
+            if (!_store.TryGet(key, out byte[]? value))
+                return Encode("(nil)\r\n");
 
-        var json = JsonSerializer.Serialize(profile);
-
-        return Encode($"{json}\r\n");
+            return EncodeBulkString(value);
+        }
+        catch (ArgumentException)
+        {
+            return Encode("-ERR invalid key\r\n");
+        }
     }
 
     private byte[] HandleDelete(ParsedCommand cmd)
@@ -73,15 +71,38 @@ public sealed class StoreCommandHandler : ICommandHandler
         if (cmd.Key.IsEmpty)
             return Encode("-ERR wrong number of arguments\r\n");
 
-        var key = Encoding.UTF8.GetString(cmd.Key);
+        string key = Encoding.UTF8.GetString(cmd.Key);
 
-        _store.Delete(key);
-
-        return Encode("OK\r\n");
+        try
+        {
+            _store.Delete(key);
+            return Encode("OK\r\n");
+        }
+        catch (ArgumentException)
+        {
+            return Encode("-ERR invalid key\r\n");
+        }
     }
 
     private static byte[] Encode(string text)
     {
         return Encoding.UTF8.GetBytes(text);
+    }
+
+    private static byte[] EncodeBulkString(byte[] value)
+    {
+        byte[] prefix = Encoding.UTF8.GetBytes(value.Length.ToString());
+        byte[] result = new byte[prefix.Length + 2 + value.Length + 2];
+
+        prefix.CopyTo(result, 0);
+        result[prefix.Length] = (byte)'\r';
+        result[prefix.Length + 1] = (byte)'\n';
+
+        value.CopyTo(result, prefix.Length + 2);
+
+        result[^2] = (byte)'\r';
+        result[^1] = (byte)'\n';
+
+        return result;
     }
 }
