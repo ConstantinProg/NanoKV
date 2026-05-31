@@ -1,4 +1,5 @@
-﻿using NanoKV.Core.Storage;
+﻿using Microsoft.Extensions.Logging.Abstractions;
+using NanoKV.Core.Storage;
 using NanoKV.Server;
 using System;
 using System.IO;
@@ -87,7 +88,7 @@ public sealed class TcpServerIntegrationTests
     [Fact]
     public async Task Server_ReturnsErrorAndClosesConnection_WhenCommandIsTooLong()
     {
-        var options = new TcpServerOptions
+        var options = new NanoKvServerOptions
         {
             MaxCommandBytes = 8,
             ReceiveBufferSize = 4,
@@ -113,7 +114,7 @@ public sealed class TcpServerIntegrationTests
     [Fact]
     public async Task Server_ReturnsIdleTimeoutAndClosesConnection_WhenClientIsIdle()
     {
-        var options = new TcpServerOptions
+        var options = new NanoKvServerOptions
         {
             MaxCommandBytes = 1024,
             ReceiveBufferSize = 128,
@@ -137,7 +138,7 @@ public sealed class TcpServerIntegrationTests
     [Fact]
     public async Task Server_RejectsConnection_WhenConnectionLimitIsExceeded()
     {
-        var options = new TcpServerOptions
+        var options = new NanoKvServerOptions
         {
             MaxConcurrentConnections = 1,
             MaxCommandBytes = 1024,
@@ -208,13 +209,10 @@ public sealed class TcpServerIntegrationTests
 
     private static async Task<string> ReadSimpleResponseAsync(NetworkStream stream)
     {
-        string line = await ReadLineAsync(stream);
-
-        return line;
+        return await ReadLineAsync(stream);
     }
 
-    private static async Task<string> ReadBulkOrSimpleResponseAsync(
-        NetworkStream stream)
+    private static async Task<string> ReadBulkOrSimpleResponseAsync(NetworkStream stream)
     {
         string firstLine = await ReadLineAsync(stream);
 
@@ -280,65 +278,96 @@ public sealed class TcpServerIntegrationTests
 
     private sealed class TestServer : IDisposable
     {
-        private readonly CancellationTokenSource _cts;
-        private readonly Task _serverTask;
+        private readonly SimpleStore _store;
+        private readonly TcpServer _server;
 
         private TestServer(
             int port,
-            CancellationTokenSource cts,
-            Task serverTask)
+            SimpleStore store,
+            TcpServer server)
         {
             Port = port;
-            _cts = cts;
-            _serverTask = serverTask;
+            _store = store;
+            _server = server;
         }
 
         public int Port { get; }
 
         public static async Task<TestServer> StartAsync(
-            TcpServerOptions? options = null)
+            NanoKvServerOptions? options = null)
         {
             int port = GetFreeTcpPort();
+
+            NanoKvServerOptions serverOptions = options is null
+                ? CreateDefaultOptions(port)
+                : CreateOptionsForPort(options, port);
 
             var store = new SimpleStore();
             var handler = new StoreCommandHandler(store);
 
             var server = new TcpServer(
-                "127.0.0.1",
-                port,
+                serverOptions,
                 handler,
-                options ?? new TcpServerOptions
-                {
-                    MaxConcurrentConnections = 100,
-                    MaxCommandBytes = 4 * 1024,
-                    ReceiveBufferSize = 512,
-                    ListenBacklog = 100,
-                    IdleTimeout = TimeSpan.FromSeconds(5)
-                });
+                NullLogger<TcpServer>.Instance);
 
-            var cts = new CancellationTokenSource();
-
-            Task serverTask = server.StartAsync(cts.Token);
+            await server.StartAsync();
 
             await WaitUntilAcceptingConnectionsAsync(port);
 
-            return new TestServer(port, cts, serverTask);
+            return new TestServer(port, store, server);
         }
 
         public void Dispose()
         {
-            _cts.Cancel();
-
             try
             {
-                _serverTask.Wait(TimeSpan.FromSeconds(5));
+                _server
+                    .StopAsync(CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
             }
-            catch
+            finally
             {
-                // Test cleanup must not hide original test failure.
-            }
+                _server
+                    .DisposeAsync()
+                    .AsTask()
+                    .GetAwaiter()
+                    .GetResult();
 
-            _cts.Dispose();
+                _store.Dispose();
+            }
+        }
+
+        private static NanoKvServerOptions CreateDefaultOptions(int port)
+        {
+            return new NanoKvServerOptions
+            {
+                Host = "127.0.0.1",
+                Port = port,
+                MaxConcurrentConnections = 100,
+                MaxCommandBytes = 4 * 1024,
+                ReceiveBufferSize = 512,
+                ListenBacklog = 100,
+                IdleTimeout = TimeSpan.FromSeconds(5),
+                ShutdownTimeout = TimeSpan.FromSeconds(5)
+            };
+        }
+
+        private static NanoKvServerOptions CreateOptionsForPort(
+            NanoKvServerOptions source,
+            int port)
+        {
+            return new NanoKvServerOptions
+            {
+                Host = "127.0.0.1",
+                Port = port,
+                MaxConcurrentConnections = source.MaxConcurrentConnections,
+                MaxCommandBytes = source.MaxCommandBytes,
+                ReceiveBufferSize = source.ReceiveBufferSize,
+                ListenBacklog = source.ListenBacklog,
+                IdleTimeout = source.IdleTimeout,
+                ShutdownTimeout = source.ShutdownTimeout
+            };
         }
 
         private static int GetFreeTcpPort()

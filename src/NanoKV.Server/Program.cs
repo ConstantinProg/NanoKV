@@ -1,9 +1,35 @@
-﻿using NanoKV.Core.Storage;
+﻿using Microsoft.Extensions.Logging;
+using NanoKV.Core.Storage;
 using NanoKV.Server;
 using OpenTelemetry;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
+
+var options = new NanoKvServerOptions
+{
+    Host = "127.0.0.1",
+    Port = 8080,
+    MaxConcurrentConnections = 100,
+    MaxCommandBytes = 4 * 1024,
+    ReceiveBufferSize = 4 * 1024,
+    ListenBacklog = 100,
+    IdleTimeout = TimeSpan.FromSeconds(30),
+    ShutdownTimeout = TimeSpan.FromSeconds(5)
+};
+
+using ILoggerFactory loggerFactory = LoggerFactory.Create(builder =>
+{
+    builder
+        .SetMinimumLevel(LogLevel.Information)
+        .AddSimpleConsole(console =>
+        {
+            console.SingleLine = true;
+            console.TimestampFormat = "HH:mm:ss ";
+        });
+});
+
+ILogger<Program> logger = loggerFactory.CreateLogger<Program>();
 
 var resourceBuilder = ResourceBuilder
     .CreateDefault()
@@ -22,19 +48,48 @@ using var meterProvider = Sdk.CreateMeterProviderBuilder()
     .Build();
 
 using var store = new SimpleStore();
+
 var handler = new StoreCommandHandler(store);
 
-var server = new TcpServer("127.0.0.1", 8080, handler);
-using var cts = new CancellationTokenSource();
+await using var server = new TcpServer(
+    options,
+    handler,
+    loggerFactory.CreateLogger<TcpServer>());
 
-var serverTask = server.StartAsync(cts.Token);
+using var shutdownCts = new CancellationTokenSource();
 
-Console.CancelKeyPress += (_, e) =>
+Console.CancelKeyPress += (_, eventArgs) =>
 {
-    e.Cancel = true;
-    cts.Cancel();
+    eventArgs.Cancel = true;
+
+    logger.LogInformation("Ctrl+C received. Graceful shutdown requested.");
+
+    shutdownCts.Cancel();
 };
 
-Console.WriteLine("Server started. Press Ctrl+C to stop.");
+await server.StartAsync(shutdownCts.Token);
 
-await serverTask;
+logger.LogInformation(
+    "Server started. Press Ctrl+C to stop.");
+
+try
+{
+    await Task.Delay(Timeout.InfiniteTimeSpan, shutdownCts.Token);
+}
+catch (OperationCanceledException)
+{
+    // Expected on Ctrl+C.
+}
+
+using var stopCts = new CancellationTokenSource(options.ShutdownTimeout);
+
+try
+{
+    await server.StopAsync(stopCts.Token);
+}
+catch (OperationCanceledException)
+{
+    logger.LogWarning(
+        "Graceful shutdown timeout expired after {ShutdownTimeout}.",
+        options.ShutdownTimeout);
+}

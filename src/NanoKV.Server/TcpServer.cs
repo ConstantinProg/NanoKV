@@ -2,11 +2,12 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using Microsoft.Extensions.Logging;
 using NanoKV.Core.Protocol;
 
 namespace NanoKV.Server;
 
-public sealed class TcpServer
+public sealed class TcpServer : IAsyncDisposable
 {
     private static readonly TimeSpan ProtocolErrorDrainTimeout =
         TimeSpan.FromMilliseconds(200);
@@ -14,79 +15,262 @@ public sealed class TcpServer
     private readonly IPEndPoint _endpoint;
     private readonly SemaphoreSlim _connectionLimiter;
     private readonly ICommandHandler _commandHandler;
-    private readonly TcpServerOptions _options;
+    private readonly NanoKvServerOptions _options;
+    private readonly ILogger<TcpServer> _logger;
+    private readonly object _syncRoot = new();
 
-    public TcpServer(string ip, int port, ICommandHandler handler)
-        : this(ip, port, handler, new TcpServerOptions())
-    {
-    }
+    private readonly HashSet<Task> _clientTasks = new();
+
+    private CancellationTokenSource? _serverCts;
+    private Socket? _listener;
+    private Task? _acceptLoopTask;
+    private bool _disposed;
 
     public TcpServer(
-        string ip,
-        int port,
-        ICommandHandler handler,
-        TcpServerOptions options)
+        NanoKvServerOptions options,
+        ICommandHandler commandHandler,
+        ILogger<TcpServer> logger)
     {
-        ArgumentNullException.ThrowIfNull(handler);
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(commandHandler);
+        ArgumentNullException.ThrowIfNull(logger);
 
         ValidateOptions(options);
 
-        _endpoint = new IPEndPoint(IPAddress.Parse(ip), port);
-        _commandHandler = handler;
         _options = options;
+        _commandHandler = commandHandler;
+        _logger = logger;
+        _endpoint = new IPEndPoint(IPAddress.Parse(options.Host), options.Port);
         _connectionLimiter = new SemaphoreSlim(options.MaxConcurrentConnections);
     }
 
-    public async Task StartAsync(CancellationToken cancellationToken)
+    public Task StartAsync(CancellationToken cancellationToken = default)
     {
-        using var server = new Socket(
-            AddressFamily.InterNetwork,
-            SocketType.Stream,
-            ProtocolType.Tcp);
+        ThrowIfDisposed();
 
-        server.Bind(_endpoint);
-        server.Listen(_options.ListenBacklog);
-
-        while (!cancellationToken.IsCancellationRequested)
+        lock (_syncRoot)
         {
-            Socket client;
+            if (_acceptLoopTask is not null)
+                throw new InvalidOperationException("TCP server is already started.");
+
+            _serverCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+            _listener = new Socket(
+                AddressFamily.InterNetwork,
+                SocketType.Stream,
+                ProtocolType.Tcp);
+
+            _listener.Bind(_endpoint);
+            _listener.Listen(_options.ListenBacklog);
+
+            _acceptLoopTask = AcceptLoopAsync(_serverCts.Token);
+        }
+
+        _logger.LogInformation(
+            "NanoKV TCP server started on {Host}:{Port}",
+            _options.Host,
+            _options.Port);
+
+        return Task.CompletedTask;
+    }
+
+    public async Task StopAsync(CancellationToken cancellationToken = default)
+    {
+        Task? acceptLoopTask;
+        Task[] clientTasks;
+
+        lock (_syncRoot)
+        {
+            if (_acceptLoopTask is null)
+                return;
+
+            _logger.LogInformation("Stopping NanoKV TCP server.");
+
+            _serverCts?.Cancel();
 
             try
             {
-                client = await server.AcceptAsync(cancellationToken);
+                _listener?.Close();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Listener socket close failed.");
+            }
+
+            acceptLoopTask = _acceptLoopTask;
+            clientTasks = _clientTasks.ToArray();
+        }
+
+        try
+        {
+            await acceptLoopTask.WaitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Accept loop finished with an exception during shutdown.");
+        }
+
+        if (clientTasks.Length > 0)
+        {
+            try
+            {
+                await Task.WhenAll(clientTasks).WaitAsync(cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                break;
-            }
+                _logger.LogWarning(
+                    "TCP server shutdown timeout expired. Active client tasks may still be completing.");
 
-            if (!_connectionLimiter.Wait(0))
+                throw;
+            }
+            catch (Exception ex)
             {
-                _ = Task.Run(
-                    () => RejectClientAsync(client),
-                    CancellationToken.None);
-
-                continue;
+                _logger.LogDebug(ex, "One or more client tasks failed during shutdown.");
             }
+        }
 
-            _ = Task.Run(
-                async () =>
+        lock (_syncRoot)
+        {
+            _listener?.Dispose();
+            _listener = null;
+
+            _serverCts?.Dispose();
+            _serverCts = null;
+
+            _acceptLoopTask = null;
+        }
+
+        _logger.LogInformation("NanoKV TCP server stopped.");
+    }
+
+    private async Task AcceptLoopAsync(CancellationToken cancellationToken)
+    {
+        Socket listener = _listener
+            ?? throw new InvalidOperationException("Listener socket is not initialized.");
+
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                Socket client;
+
+                try
                 {
-                    try
-                    {
-                        await ProcessClientAsync(client, cancellationToken);
-                    }
-                    finally
-                    {
-                        _connectionLimiter.Release();
-                    }
-                },
-                CancellationToken.None);
+                    client = await listener.AcceptAsync(cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (SocketException ex) when (cancellationToken.IsCancellationRequested)
+                {
+                    _logger.LogDebug(ex, "Accept was interrupted by server shutdown.");
+                    break;
+                }
+                catch (ObjectDisposedException) when (cancellationToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to accept TCP client.");
+                    continue;
+                }
+
+                if (!_connectionLimiter.Wait(0))
+                {
+                    _logger.LogWarning(
+                        "Rejected client {RemoteEndPoint}: connection limit exceeded.",
+                        client.RemoteEndPoint);
+
+                    _ = TrackClientTaskAsync(
+                        RejectClientAsync(client),
+                        CancellationToken.None);
+
+                    continue;
+                }
+
+                _logger.LogInformation(
+                    "Accepted client {RemoteEndPoint}.",
+                    client.RemoteEndPoint);
+
+                _ = TrackClientTaskAsync(
+                    ProcessClientAndReleaseAsync(client, cancellationToken),
+                    cancellationToken);
+            }
+        }
+        finally
+        {
+            _logger.LogInformation("TCP accept loop completed.");
         }
     }
 
-    private static async Task RejectClientAsync(Socket client)
+    private async Task TrackClientTaskAsync(
+        Task task,
+        CancellationToken cancellationToken)
+    {
+        lock (_syncRoot)
+        {
+            _clientTasks.Add(task);
+        }
+
+        try
+        {
+            await task;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Expected during graceful shutdown.
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Client task failed.");
+        }
+        finally
+        {
+            lock (_syncRoot)
+            {
+                _clientTasks.Remove(task);
+            }
+        }
+    }
+
+    private async Task ProcessClientAndReleaseAsync(
+        Socket client,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await ProcessClientAsync(client, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogDebug(
+                "Client {RemoteEndPoint} processing cancelled by server shutdown.",
+                SafeRemoteEndPoint(client));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Client {RemoteEndPoint} processing failed.",
+                SafeRemoteEndPoint(client));
+        }
+        finally
+        {
+            _connectionLimiter.Release();
+
+            _logger.LogInformation(
+                "Client {RemoteEndPoint} disconnected.",
+                SafeRemoteEndPoint(client));
+        }
+    }
+
+    private async Task RejectClientAsync(Socket client)
     {
         try
         {
@@ -96,8 +280,9 @@ public sealed class TcpServer
 
             await GracefulProtocolCloseAsync(client, CancellationToken.None);
         }
-        catch
+        catch (Exception ex)
         {
+            _logger.LogDebug(ex, "Failed to reject client gracefully.");
             CloseClient(client);
         }
     }
@@ -106,7 +291,8 @@ public sealed class TcpServer
         Socket client,
         CancellationToken serverCancellationToken)
     {
-        byte[] receiveBuffer = ArrayPool<byte>.Shared.Rent(_options.ReceiveBufferSize);
+        byte[] receiveBuffer =
+            ArrayPool<byte>.Shared.Rent(_options.ReceiveBufferSize);
 
         using var lineBuffer = new LineBuffer(_options.MaxCommandBytes);
 
@@ -131,6 +317,10 @@ public sealed class TcpServer
                 catch (OperationCanceledException)
                     when (!serverCancellationToken.IsCancellationRequested)
                 {
+                    _logger.LogInformation(
+                        "Client {RemoteEndPoint} disconnected by idle timeout.",
+                        SafeRemoteEndPoint(client));
+
                     await client.SendAsync(
                         ProtocolResponse.Error("idle timeout"),
                         CancellationToken.None);
@@ -178,7 +368,7 @@ public sealed class TcpServer
     private ProcessReceivedBytesResult ProcessReceivedBytes(
         ReadOnlySpan<byte> received,
         LineBuffer lineBuffer,
-        EndPoint remoteEndPoint)
+        EndPoint? remoteEndPoint)
     {
         var responses = new List<byte[]>();
 
@@ -194,6 +384,10 @@ public sealed class TcpServer
             {
                 if (!lineBuffer.TryAppend(remaining))
                 {
+                    _logger.LogWarning(
+                        "Closing client {RemoteEndPoint}: command too long.",
+                        remoteEndPoint);
+
                     responses.Add(ProtocolResponse.Error("command too long"));
 
                     return new ProcessReceivedBytesResult(
@@ -212,6 +406,10 @@ public sealed class TcpServer
 
             if (!lineBuffer.TryAppend(segmentBeforeNewline))
             {
+                _logger.LogWarning(
+                    "Closing client {RemoteEndPoint}: command too long.",
+                    remoteEndPoint);
+
                 responses.Add(ProtocolResponse.Error("command too long"));
 
                 return new ProcessReceivedBytesResult(
@@ -240,7 +438,7 @@ public sealed class TcpServer
 
     private byte[] ProcessCommand(
         ReadOnlySpan<byte> line,
-        EndPoint remoteEndPoint)
+        EndPoint? remoteEndPoint)
     {
         ParsedCommand command = CommandParser.Parse(line);
 
@@ -249,13 +447,13 @@ public sealed class TcpServer
 
         string commandName = GetCommandName(command.Type);
 
-        using Activity activity = Telemetry.ActivitySource.StartActivity(
+        using Activity? activity = Telemetry.ActivitySource.StartActivity(
             "Process command",
             ActivityKind.Server);
 
         activity?.SetTag("command.name", commandName);
         activity?.SetTag("command.has_key", !command.Key.IsEmpty);
-        activity?.SetTag("net.peer", remoteEndPoint.ToString());
+        activity?.SetTag("net.peer", remoteEndPoint?.ToString());
 
         Stopwatch stopwatch = Stopwatch.StartNew();
 
@@ -273,6 +471,12 @@ public sealed class TcpServer
         Telemetry.CommandDuration.Record(
             stopwatch.Elapsed.TotalMilliseconds,
             tags);
+
+        _logger.LogDebug(
+            "Processed command {CommandName} from {RemoteEndPoint} in {ElapsedMilliseconds} ms.",
+            commandName,
+            remoteEndPoint,
+            stopwatch.Elapsed.TotalMilliseconds);
 
         return response;
     }
@@ -329,10 +533,22 @@ public sealed class TcpServer
         }
         catch
         {
-            // Connection may already be closed.
+            // Socket may already be closed.
         }
 
         client.Dispose();
+    }
+
+    private static EndPoint? SafeRemoteEndPoint(Socket client)
+    {
+        try
+        {
+            return client.RemoteEndPoint;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static string GetCommandName(CommandType type)
@@ -348,8 +564,13 @@ public sealed class TcpServer
         };
     }
 
-    private static void ValidateOptions(TcpServerOptions options)
+    private static void ValidateOptions(NanoKvServerOptions options)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(options.Host);
+
+        if (options.Port <= 0)
+            throw new ArgumentOutOfRangeException(nameof(options.Port));
+
         if (options.MaxConcurrentConnections <= 0)
             throw new ArgumentOutOfRangeException(nameof(options.MaxConcurrentConnections));
 
@@ -364,6 +585,34 @@ public sealed class TcpServer
 
         if (options.IdleTimeout <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(options.IdleTimeout));
+
+        if (options.ShutdownTimeout <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(options.ShutdownTimeout));
+    }
+
+    private void ThrowIfDisposed()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed)
+            return;
+
+        using var cts = new CancellationTokenSource(_options.ShutdownTimeout);
+
+        try
+        {
+            await StopAsync(cts.Token);
+        }
+        catch
+        {
+            // Dispose must be best-effort.
+        }
+
+        _connectionLimiter.Dispose();
+        _disposed = true;
     }
 
     private readonly record struct ProcessReceivedBytesResult(
