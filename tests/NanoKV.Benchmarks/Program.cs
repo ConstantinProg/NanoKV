@@ -1,29 +1,13 @@
-﻿using BenchmarkDotNet.Attributes;
-using BenchmarkDotNet.Running;
-using NanoKV.Core.Models;
-using System.Text.Json;
+﻿using BenchmarkDotNet.Running;
 
-BenchmarkRunner.Run<SerializationBenchmarks>();
+namespace NanoKV.Benchmarks;
 
-[MemoryDiagnoser]
-public class SerializationBenchmarks
+public static class Program
 {
-    private readonly UserProfile _profile = new()
+    public static void Main(string[] args)
     {
-        Id = 42,
-        Username = "constantin",
-        CreatedAt = new DateTime(2026, 5, 13, 12, 0, 0, DateTimeKind.Utc)
-    };
-
-    [Benchmark(Baseline = true)]
-    public byte[] SystemTextJson()
-    {
-        return JsonSerializer.SerializeToUtf8Bytes(_profile);
-    }
-
-    [Benchmark]
-    public byte[] GeneratedBinary()
-    {
-        return _profile.SerializeToBinary();
+        BenchmarkSwitcher
+            .FromAssembly(typeof(Program).Assembly)
+            .Run(args);
     }
 }
