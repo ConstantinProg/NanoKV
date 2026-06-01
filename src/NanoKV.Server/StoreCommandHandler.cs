@@ -94,7 +94,7 @@ public sealed class StoreCommandHandler : ICommandHandler
         StoreStatistics statistics = _store.GetStatistics();
 
         string payload =
-            $"sets={statistics.SetCount};gets={statistics.GetCount};deletes={statistics.DeleteCount}";
+            $"sets={statistics.SetCount};gets={statistics.GetCount};deletes={statistics.DeleteCount};items={statistics.ItemCount}";
 
         return ProtocolResponse.BulkString(Encoding.ASCII.GetBytes(payload));
     }

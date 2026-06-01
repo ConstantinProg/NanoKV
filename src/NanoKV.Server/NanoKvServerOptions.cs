@@ -17,4 +17,6 @@ public sealed class NanoKvServerOptions
     public TimeSpan IdleTimeout { get; init; } = TimeSpan.FromSeconds(30);
 
     public TimeSpan ShutdownTimeout { get; init; } = TimeSpan.FromSeconds(5);
+
+    public NanoKvTelemetryOptions Telemetry { get; init; } = new();
 }

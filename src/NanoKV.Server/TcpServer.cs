@@ -183,6 +183,8 @@ public sealed class TcpServer : IAsyncDisposable
 
                 if (!_connectionLimiter.Wait(0))
                 {
+                    Telemetry.RejectedConnections.Add(1);
+
                     _logger.LogWarning(
                         "Rejected client {RemoteEndPoint}: connection limit exceeded.",
                         client.RemoteEndPoint);
@@ -193,6 +195,8 @@ public sealed class TcpServer : IAsyncDisposable
 
                     continue;
                 }
+
+                Telemetry.ActiveConnections.Add(1);
 
                 _logger.LogInformation(
                     "Accepted client {RemoteEndPoint}.",
@@ -263,6 +267,7 @@ public sealed class TcpServer : IAsyncDisposable
         finally
         {
             _connectionLimiter.Release();
+            Telemetry.ActiveConnections.Add(-1);
 
             _logger.LogInformation(
                 "Client {RemoteEndPoint} disconnected.",
@@ -274,9 +279,10 @@ public sealed class TcpServer : IAsyncDisposable
     {
         try
         {
-            await client.SendAsync(
-                ProtocolResponse.Error("too many connections"),
-                CancellationToken.None);
+            byte[] response = ProtocolResponse.Error("too many connections");
+
+            await client.SendAsync(response, CancellationToken.None);
+            Telemetry.BytesSent.Add(response.Length);
 
             await GracefulProtocolCloseAsync(client, CancellationToken.None);
         }
@@ -321,9 +327,10 @@ public sealed class TcpServer : IAsyncDisposable
                         "Client {RemoteEndPoint} disconnected by idle timeout.",
                         SafeRemoteEndPoint(client));
 
-                    await client.SendAsync(
-                        ProtocolResponse.Error("idle timeout"),
-                        CancellationToken.None);
+                    byte[] response = ProtocolResponse.Error("idle timeout");
+
+                    await client.SendAsync(response, CancellationToken.None);
+                    Telemetry.BytesSent.Add(response.Length);
 
                     await GracefulProtocolCloseAsync(
                         client,
@@ -335,6 +342,8 @@ public sealed class TcpServer : IAsyncDisposable
                 if (bytesRead == 0)
                     return;
 
+                Telemetry.BytesReceived.Add(bytesRead);
+
                 ProcessReceivedBytesResult result = ProcessReceivedBytes(
                     receiveBuffer.AsSpan(0, bytesRead),
                     lineBuffer,
@@ -343,6 +352,7 @@ public sealed class TcpServer : IAsyncDisposable
                 foreach (byte[] response in result.Responses)
                 {
                     await client.SendAsync(response, serverCancellationToken);
+                    Telemetry.BytesSent.Add(response.Length);
                 }
 
                 if (!result.ContinueConnection)
@@ -448,37 +458,50 @@ public sealed class TcpServer : IAsyncDisposable
         string commandName = GetCommandName(command.Type);
 
         using Activity? activity = Telemetry.ActivitySource.StartActivity(
-            "Process command",
+            "nanokv.command.process",
             ActivityKind.Server);
 
         activity?.SetTag("command.name", commandName);
-        activity?.SetTag("command.has_key", !command.Key.IsEmpty);
-        activity?.SetTag("net.peer", remoteEndPoint?.ToString());
 
-        Stopwatch stopwatch = Stopwatch.StartNew();
+        long startTimestamp = Stopwatch.GetTimestamp();
 
         byte[] response = _commandHandler.Handle(command);
 
-        stopwatch.Stop();
+        double elapsedMilliseconds =
+            Stopwatch.GetElapsedTime(startTimestamp).TotalMilliseconds;
+
+        string commandStatus = GetCommandStatus(response);
 
         var tags = new TagList
-        {
-            { "command.name", commandName },
-            { "command.has_key", !command.Key.IsEmpty }
-        };
+    {
+        { "command.name", commandName },
+        { "command.status", commandStatus }
+    };
 
         Telemetry.CommandsProcessed.Add(1, tags);
-        Telemetry.CommandDuration.Record(
-            stopwatch.Elapsed.TotalMilliseconds,
-            tags);
+        Telemetry.CommandDuration.Record(elapsedMilliseconds, tags);
+
+        activity?.SetTag("command.status", commandStatus);
+        activity?.SetTag("command.response.bytes", response.Length);
+
+        if (commandStatus == "error")
+            activity?.SetStatus(ActivityStatusCode.Error);
 
         _logger.LogDebug(
-            "Processed command {CommandName} from {RemoteEndPoint} in {ElapsedMilliseconds} ms.",
+            "Processed command {CommandName} from {RemoteEndPoint} with status {CommandStatus} in {ElapsedMilliseconds} ms.",
             commandName,
             remoteEndPoint,
-            stopwatch.Elapsed.TotalMilliseconds);
+            commandStatus,
+            elapsedMilliseconds);
 
         return response;
+    }
+
+    private static string GetCommandStatus(ReadOnlySpan<byte> response)
+    {
+        return response.Length > 0 && response[0] == (byte)'-'
+            ? "error"
+            : "ok";
     }
 
     private static async Task GracefulProtocolCloseAsync(
@@ -512,6 +535,8 @@ public sealed class TcpServer : IAsyncDisposable
 
                 if (read == 0)
                     break;
+
+                Telemetry.BytesReceived.Add(read);
             }
         }
         catch

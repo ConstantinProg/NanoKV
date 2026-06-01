@@ -14,15 +14,10 @@ bool loggingEnabled = IsEnabled(
     environmentVariableName: "NANOKV_LOGGING",
     defaultValue: false);
 
-bool telemetryEnabled = IsEnabled(
-    args,
-    argumentName: "--telemetry",
-    environmentVariableName: "NANOKV_TELEMETRY",
-    defaultValue: false);
-
 using ILoggerFactory loggerFactory = CreateLoggerFactory(loggingEnabled);
-
 ILogger<Program> logger = loggerFactory.CreateLogger<Program>();
+
+using var store = new SimpleStore();
 
 ResourceBuilder resourceBuilder = ResourceBuilder
     .CreateDefault()
@@ -31,19 +26,26 @@ ResourceBuilder resourceBuilder = ResourceBuilder
 TracerProvider? tracerProvider = null;
 MeterProvider? meterProvider = null;
 
-if (telemetryEnabled)
+if (serverOptions.Telemetry.Enabled)
 {
-    tracerProvider = Sdk.CreateTracerProviderBuilder()
+    TracerProviderBuilder tracerBuilder = Sdk.CreateTracerProviderBuilder()
         .SetResourceBuilder(resourceBuilder)
-        .AddSource(Telemetry.ServiceName)
-        .AddConsoleExporter()
-        .Build();
+        .AddSource(Telemetry.ActivitySourceName);
 
-    meterProvider = Sdk.CreateMeterProviderBuilder()
+    MeterProviderBuilder meterBuilder = Sdk.CreateMeterProviderBuilder()
         .SetResourceBuilder(resourceBuilder)
-        .AddMeter(Telemetry.ServiceName)
-        .AddConsoleExporter()
-        .Build();
+        .AddMeter(Telemetry.MeterName);
+
+    Telemetry.CreateStoreItemCountGauge(() => store.Count);
+
+    if (serverOptions.Telemetry.ConsoleExporterEnabled)
+    {
+        tracerBuilder.AddConsoleExporter();
+        meterBuilder.AddConsoleExporter();
+    }
+
+    tracerProvider = tracerBuilder.Build();
+    meterProvider = meterBuilder.Build();
 
     logger.LogInformation("OpenTelemetry is enabled.");
 }
@@ -54,7 +56,6 @@ else
 
 using (tracerProvider)
 using (meterProvider)
-using (var store = new SimpleStore())
 {
     var handler = new StoreCommandHandler(store);
 
@@ -128,6 +129,18 @@ static ILoggerFactory CreateLoggerFactory(bool loggingEnabled)
 
 static NanoKvServerOptions CreateServerOptions(string[] args)
 {
+    bool telemetryEnabled = IsEnabled(
+        args,
+        argumentName: "--telemetry",
+        environmentVariableName: "NANOKV_TELEMETRY",
+        defaultValue: false);
+
+    bool telemetryConsoleExporterEnabled = IsEnabled(
+        args,
+        argumentName: "--telemetry-console",
+        environmentVariableName: "NANOKV_TELEMETRY_CONSOLE",
+        defaultValue: true);
+
     return new NanoKvServerOptions
     {
         Host = GetString(
@@ -178,7 +191,13 @@ static NanoKvServerOptions CreateServerOptions(string[] args)
                 args,
                 argumentName: "--shutdown-timeout-seconds",
                 environmentVariableName: "NANOKV_SHUTDOWN_TIMEOUT_SECONDS",
-                defaultValue: 5))
+                defaultValue: 5)),
+
+        Telemetry = new NanoKvTelemetryOptions
+        {
+            Enabled = telemetryEnabled,
+            ConsoleExporterEnabled = telemetryConsoleExporterEnabled
+        }
     };
 }
 

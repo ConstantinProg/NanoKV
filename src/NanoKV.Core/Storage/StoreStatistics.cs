@@ -3,4 +3,5 @@
 public readonly record struct StoreStatistics(
     long SetCount,
     long GetCount,
-    long DeleteCount);
+    long DeleteCount,
+    long ItemCount);

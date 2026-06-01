@@ -8,6 +8,9 @@ public sealed class SimpleStore : IDisposable
     private long _setCount;
     private long _getCount;
     private long _deleteCount;
+    private long _itemCount;
+
+    public long Count => Interlocked.Read(ref _itemCount);
 
     public void Set(string key, ReadOnlySpan<byte> value)
     {
@@ -19,6 +22,9 @@ public sealed class SimpleStore : IDisposable
 
         try
         {
+            if (!_storage.ContainsKey(key))
+                Interlocked.Increment(ref _itemCount);
+
             _storage[key] = copy;
             Interlocked.Increment(ref _setCount);
         }
@@ -64,7 +70,10 @@ public sealed class SimpleStore : IDisposable
             bool removed = _storage.Remove(key);
 
             if (removed)
+            {
                 Interlocked.Increment(ref _deleteCount);
+                Interlocked.Decrement(ref _itemCount);
+            }
 
             return removed;
         }
@@ -79,7 +88,8 @@ public sealed class SimpleStore : IDisposable
         return new StoreStatistics(
             Interlocked.Read(ref _setCount),
             Interlocked.Read(ref _getCount),
-            Interlocked.Read(ref _deleteCount));
+            Interlocked.Read(ref _deleteCount),
+            Interlocked.Read(ref _itemCount));
     }
 
     public void Dispose()

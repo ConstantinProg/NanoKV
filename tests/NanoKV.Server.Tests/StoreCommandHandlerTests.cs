@@ -175,7 +175,9 @@ public sealed class StoreCommandHandlerTests
 
         byte[] response = Handle(handler, "STATS");
 
-        Assert.Equal("$23\r\nsets=1;gets=1;deletes=1\r\n", Decode(response));
+        Assert.Equal(
+            "$31\r\nsets=1;gets=1;deletes=1;items=0\r\n",
+            Decode(response));
     }
 
     [Fact]
