@@ -1,13 +1,13 @@
 using System.Buffers;
 using System.Net.Sockets;
 using System.Text;
-using System.Text.Json;
-using NanoKV.Core.Models;
 
 namespace NanoKV.LoadTests;
 
 public sealed class NanoKvClient : IAsyncDisposable
 {
+    private static readonly byte[] NewLine = "\n"u8.ToArray();
+
     private const int ReceiveBufferSize = 8192;
 
     private readonly string _host;
@@ -39,7 +39,10 @@ public sealed class NanoKvClient : IAsyncDisposable
         if (_client is not null)
             throw new InvalidOperationException("Client is already connected.");
 
-        _client = new TcpClient();
+        _client = new TcpClient
+        {
+            NoDelay = true
+        };
 
         try
         {
@@ -60,50 +63,93 @@ public sealed class NanoKvClient : IAsyncDisposable
 
     public async Task SetAsync(
         string key,
-        UserProfile profile,
+        ReadOnlyMemory<byte> value,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
-        ArgumentNullException.ThrowIfNull(profile);
-
         ThrowIfDisposed();
 
-        string json = JsonSerializer.Serialize(profile);
-        byte[] command = Encoding.UTF8.GetBytes($"SET {key} {json}\n");
+        NetworkStream stream = GetStream();
 
-        await SendAsync(command, cancellationToken).ConfigureAwait(false);
+        byte[] prefix = Encoding.UTF8.GetBytes($"SET {key} ");
 
-        string response = await ReadLineAsync(cancellationToken).ConfigureAwait(false);
+        await stream.WriteAsync(prefix, cancellationToken)
+            .ConfigureAwait(false);
 
-        if (response != "OK")
+        await stream.WriteAsync(value, cancellationToken)
+            .ConfigureAwait(false);
+
+        await stream.WriteAsync(NewLine, cancellationToken)
+            .ConfigureAwait(false);
+
+        string response = await ReadLineAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (response != "+OK\r\n")
             throw new InvalidOperationException($"Unexpected SET response: {response}");
     }
 
-    public async Task<string> GetAsync(
+    public async Task<string?> GetAsync(
         string key,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
-
         ThrowIfDisposed();
 
-        byte[] command = Encoding.UTF8.GetBytes($"GET {key}\n");
-
-        await SendAsync(command, cancellationToken).ConfigureAwait(false);
-
-        return await ReadLineAsync(cancellationToken).ConfigureAwait(false);
-    }
-
-    private async Task SendAsync(
-        byte[] command,
-        CancellationToken cancellationToken)
-    {
-        NetworkStream stream = GetStream();
-
-        await stream.WriteAsync(command, cancellationToken)
+        await SendCommandAsync($"GET {key}\n", cancellationToken)
             .ConfigureAwait(false);
 
-        await stream.FlushAsync(cancellationToken)
+        string firstLine = await ReadLineAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (firstLine == "$-1\r\n")
+            return null;
+
+        if (!firstLine.StartsWith('$'))
+            throw new InvalidOperationException($"Unexpected GET response: {firstLine}");
+
+        int length = ParseBulkLength(firstLine);
+
+        byte[] payloadAndCrLf = await ReadExactAsync(
+                length + 2,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (payloadAndCrLf[^2] != (byte)'\r' ||
+            payloadAndCrLf[^1] != (byte)'\n')
+        {
+            throw new InvalidOperationException("Invalid bulk string terminator.");
+        }
+
+        return Encoding.UTF8.GetString(payloadAndCrLf, 0, length);
+    }
+
+    public async Task DeleteAsync(
+        string key,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+        ThrowIfDisposed();
+
+        await SendCommandAsync($"DELETE {key}\n", cancellationToken)
+            .ConfigureAwait(false);
+
+        string response = await ReadLineAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (response != "+OK\r\n")
+            throw new InvalidOperationException($"Unexpected DELETE response: {response}");
+    }
+
+    private async Task SendCommandAsync(
+        string command,
+        CancellationToken cancellationToken)
+    {
+        byte[] bytes = Encoding.UTF8.GetBytes(command);
+
+        NetworkStream stream = GetStream();
+
+        await stream.WriteAsync(bytes, cancellationToken)
             .ConfigureAwait(false);
     }
 
@@ -135,21 +181,13 @@ public sealed class NanoKvClient : IAsyncDisposable
 
             if (lineEnd >= 0)
             {
-                int length = lineEnd - _receiveOffset;
+                int length = lineEnd - _receiveOffset + 1;
 
-                if (length > 0)
-                {
-                    line.Write(_receiveBuffer.AsSpan(_receiveOffset, length));
-                }
+                line.Write(_receiveBuffer.AsSpan(_receiveOffset, length));
 
                 _receiveOffset = lineEnd + 1;
 
-                ReadOnlySpan<byte> result = line.WrittenSpan;
-
-                if (result.Length > 0 && result[^1] == (byte)'\r')
-                    result = result[..^1];
-
-                return Encoding.UTF8.GetString(result);
+                return Encoding.UTF8.GetString(line.WrittenSpan);
             }
 
             int remaining = _receiveCount - _receiveOffset;
@@ -160,6 +198,58 @@ public sealed class NanoKvClient : IAsyncDisposable
                 _receiveOffset = _receiveCount;
             }
         }
+    }
+
+    private async Task<byte[]> ReadExactAsync(
+        int length,
+        CancellationToken cancellationToken)
+    {
+        byte[] result = new byte[length];
+        int written = 0;
+
+        if (_receiveOffset < _receiveCount)
+        {
+            int buffered = Math.Min(
+                length,
+                _receiveCount - _receiveOffset);
+
+            Buffer.BlockCopy(
+                _receiveBuffer,
+                _receiveOffset,
+                result,
+                written,
+                buffered);
+
+            _receiveOffset += buffered;
+            written += buffered;
+        }
+
+        NetworkStream stream = GetStream();
+
+        while (written < length)
+        {
+            int read = await stream.ReadAsync(
+                    result.AsMemory(written, length - written),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (read == 0)
+                throw new IOException("Connection closed by server.");
+
+            written += read;
+        }
+
+        return result;
+    }
+
+    private static int ParseBulkLength(string line)
+    {
+        ReadOnlySpan<char> lengthSpan = line.AsSpan(1, line.Length - 3);
+
+        if (!int.TryParse(lengthSpan, out int length) || length < 0)
+            throw new InvalidOperationException($"Invalid bulk string length: {line}");
+
+        return length;
     }
 
     private static int FindLineFeed(byte[] buffer, int offset, int count)
@@ -183,8 +273,7 @@ public sealed class NanoKvClient : IAsyncDisposable
 
     private void ThrowIfDisposed()
     {
-        if (_disposed)
-            throw new ObjectDisposedException(nameof(NanoKvClient));
+        ObjectDisposedException.ThrowIf(_disposed, this);
     }
 
     public async ValueTask DisposeAsync()

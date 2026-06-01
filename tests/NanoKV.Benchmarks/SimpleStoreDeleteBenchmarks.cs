@@ -6,6 +6,10 @@ namespace NanoKV.Benchmarks;
 [Config(typeof(BenchmarkConfig))]
 public class SimpleStoreDeleteBenchmarks
 {
+    enum MyEnum
+    {
+
+    }
     private readonly byte[] _value =
         "hello-world-value"u8.ToArray();
 
